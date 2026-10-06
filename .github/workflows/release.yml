@@ -1,0 +1,24 @@
+name: Release
+# Run it from the Actions tab after the version bump is pushed to `main`. It publishes the version in `lib/soml/version.rb` and pushes its `v` tag.
+on: workflow_dispatch
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # A release from any other branch would tag a commit that is not on `main`.
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      # Trusted publishing, which is set up on rubygems.org, so there is no API key in the secrets.
+      id-token: write
+      # For pushing the tag.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ruby
+          bundler-cache: true
+      - run: bundle exec rake
+      # Runs `rake release`, which builds the gem, pushes it, and pushes the tag.
+      - uses: rubygems/release-gem@v1

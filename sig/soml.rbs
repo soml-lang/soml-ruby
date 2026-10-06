@@ -1,0 +1,239 @@
+# Read and write SOML, a config format for humans.
+module SOML
+	VERSION: String
+
+	# A value in a document, as `parse` returns it.
+	type value = String | Integer | Float | bool | nil | Date | Time | Duration | Array[value] | Hash[String | Symbol, value]
+
+	# A whole document, which is always an object or an array.
+	type document = Hash[String | Symbol, value] | Array[value]
+
+	# Parse a document.
+	def self.parse: (string source, ?symbolize_names: boolish, ?freeze: boolish) -> document
+
+	# Read and parse a file.
+	def self.load_file: (path path, ?symbolize_names: boolish, ?freeze: boolish) -> document
+
+	# Write a hash or an array as SOML, keeping the member order of each hash, or as canonical form with `canonical: true`.
+	def self.generate: (Hash[untyped, untyped] | Array[untyped] value, ?canonical: boolish) -> String
+
+	# Parse a document into a read-only syntax tree for linters and other tools.
+	def self.parse_tree: (string source) -> Tree
+
+	# Format a document, keeping its comments, member order, and spelling.
+	def self.format: (string source) -> String
+
+	# A key in an object or an index in an array.
+	type path_segment = String | Symbol | Integer
+
+	# What `edit` changes: the keys and indexes that lead to a value, or a member or a non-root value node from `parse_tree` of the same source.
+	type edit_target = Array[path_segment] | Tree::MemberNode | Tree::ObjectNode | Tree::ArrayNode | Tree::ScalarNode
+
+	# Change one value in a document, and keep everything else as it is written.
+	def self.edit: (string source, edit_target path, untyped value, ?delete: false) -> String
+		| (string source, edit_target path, delete: true) -> String
+
+	# Whether a key can be written without quotes, as a bare key. A key is a `String` or a `Symbol`, so anything else gives false.
+	def self.bare_key?: (untyped key) -> bool
+
+	# The base class of the errors this library raises.
+	class Error < StandardError
+	end
+
+	# Raised when the input is not a valid document.
+	class ParseError < Error
+		# What is wrong, without the position.
+		attr_reader reason: String
+
+		# The 1-based line of the error.
+		attr_reader line: Integer
+
+		# The 1-based column of the error, counted in characters.
+		attr_reader column: Integer
+
+		# The 0-based character index of the error in the source.
+		attr_reader offset: Integer
+
+		# The file the document is from, when it was read by `load_file`.
+		attr_reader path: String?
+
+		# Only the parser makes a `ParseError`. `byte_offset` is where the error is in `source`, in bytes.
+		def initialize: (String reason, String source, Integer byte_offset, ?String? path) -> void
+
+		# Up to three lines ending at the error, with a caret under the position.
+		def code_frame: () -> String
+
+		def detailed_message: (?highlight: boolish, **untyped) -> String
+	end
+
+	# Raised by `generate` for a value that cannot be written.
+	class GenerateError < Error
+		# What is wrong, without the location.
+		attr_reader reason: String
+
+		# The keys and indexes that lead to the value.
+		attr_reader path: Array[String | Integer]
+
+		# Only the generator makes a `GenerateError`.
+		def initialize: (String reason) -> void
+
+		# The reason, and the path to the value when it is not the top-level value.
+		def to_s: () -> String
+	end
+
+	# A length of time, exact to the nanosecond.
+	class Duration < Data
+		include Comparable
+
+		# Read a duration written as in a document, such as `1h30m`.
+		def self.parse: (string text) -> Duration
+
+		# Make a duration from a number of seconds, rounded to the nearest nanosecond, with ties to even.
+		def self.from_seconds: (Numeric seconds) -> Duration
+
+		def self.new: (nanoseconds: Integer) -> Duration
+			| (Integer nanoseconds) -> Duration
+
+		def self.[]: (nanoseconds: Integer) -> Duration
+			| (Integer nanoseconds) -> Duration
+
+		def self.members: () -> [:nanoseconds]
+
+		# The length in nanoseconds.
+		attr_reader nanoseconds: Integer
+
+		def initialize: (nanoseconds: Integer) -> void
+
+		def <=>: (untyped other) -> Integer?
+
+		def ==: (untyped other) -> bool
+
+		def eql?: (untyped other) -> bool
+
+		def hash: () -> Integer
+
+		def zero?: () -> bool
+
+		def positive?: () -> bool
+
+		def negative?: () -> bool
+
+		# The same length in the other direction.
+		def -@: () -> Duration
+
+		def abs: () -> Duration
+
+		def +: (Duration other) -> Duration
+
+		def -: (Duration other) -> Duration
+
+		# The length in seconds, exactly.
+		def to_r: () -> Rational
+
+		# The length in seconds.
+		def to_f: () -> Float
+
+		# The canonical spelling, such as `1h30m`.
+		def to_s: () -> String
+
+		def inspect: () -> String
+
+		def to_h: () -> { nanoseconds: Integer }
+
+		def with: (?nanoseconds: Integer) -> Duration
+
+		def deconstruct: () -> [Integer]
+
+		def deconstruct_keys: (Array[Symbol]? keys) -> { nanoseconds: Integer }
+	end
+
+	# A read-only syntax tree, from `parse_tree`. Every offset is a UTF-8 byte offset into `source`, and `finish` is exclusive.
+	class Tree
+		# A node of the tree.
+		type node = ObjectNode | ArrayNode | MemberNode | KeyNode | ScalarNode
+
+		# A `# ...` comment or a `/* ... */` comment, with its text without the delimiters.
+		class Comment < Struct[untyped]
+			attr_reader type: :line | :block
+			attr_reader start: Integer
+			attr_reader finish: Integer
+			attr_reader value: String
+		end
+
+		# A lexical token, with its source text.
+		class Token < Struct[untyped]
+			attr_reader type: :punctuator | :bare_key | :string | :integer | :float | :keyword | :date | :instant | :duration
+			attr_reader start: Integer
+			attr_reader finish: Integer
+			attr_reader value: String
+		end
+
+		# An object, written with braces or, only at the top level, without them.
+		class ObjectNode < Struct[untyped]
+			attr_reader members: Array[MemberNode]
+			attr_reader braced: bool
+			attr_reader start: Integer
+			attr_reader finish: Integer
+			def type: () -> :object
+		end
+
+		class ArrayNode < Struct[untyped]
+			attr_reader elements: Array[ObjectNode | ArrayNode | ScalarNode]
+			attr_reader start: Integer
+			attr_reader finish: Integer
+			def type: () -> :array
+		end
+
+		# A `key: value` member.
+		class MemberNode < Struct[untyped]
+			attr_reader key: KeyNode
+			attr_reader value: ObjectNode | ArrayNode | ScalarNode
+			attr_reader start: Integer
+			attr_reader finish: Integer
+			def type: () -> :member
+		end
+
+		# A key, with its decoded string and how it is written.
+		class KeyNode < Struct[untyped]
+			attr_reader value: String
+			attr_reader start: Integer
+			attr_reader finish: Integer
+			attr_reader style: :bare | :literal | :escaped
+			def type: () -> :key
+		end
+
+		# A value that is not a collection, with its decoded value and how it is written.
+		class ScalarNode < Struct[untyped]
+			attr_reader block: bool
+			attr_reader start: Integer
+			attr_reader finish: Integer
+			attr_reader kind: :string | :integer | :float | :boolean | :null | :date | :instant | :duration
+			attr_reader value: String | Integer | Float | bool | nil | Date | Time | Duration
+			attr_reader style: (:literal | :escaped)?
+			attr_reader radix: (2 | 8 | 10 | 16)?
+			def type: () -> :scalar
+		end
+
+		# The source, in UTF-8.
+		attr_reader source: String
+
+		# The document's collection.
+		attr_reader body: ObjectNode | ArrayNode
+
+		# Every comment, in source order.
+		attr_reader comments: Array[Comment]
+
+		# Every lexical token, in source order.
+		attr_reader tokens: Array[Token]
+
+		# `lean` is internal, for `format` and `edit`.
+		def initialize: (string source, ?lean: boolish) -> void
+
+		# Yield the body and all its descendants in source order.
+		def each_node: () { (node) -> void } -> self
+			| () -> Enumerator[node, self]
+
+		# The 1-based line and column of a byte offset in `source`.
+		def position: (Integer byte_offset) -> [Integer, Integer]
+	end
+end

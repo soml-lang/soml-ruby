@@ -1,0 +1,33 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby-version:
+          - '4.0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+      # The Rakefile turns warnings on, and a warning fails the job, because `ruby -w` is clean.
+      # `shell: bash` turns on `pipefail`, so a failing suite fails the step even though its output goes through `tee`.
+      - name: Test
+        shell: bash
+        run: |
+          bundle exec rake 2>&1 | tee test.log
+          ! grep 'warning:' test.log
+      # YJIT compiles the hot paths differently, so the suite runs with it too.
+      - name: Test with YJIT
+        run: bundle exec rake
+        env:
+          RUBYOPT: --yjit
+      # `rbs` is a bundled gem, so it is not in the Gemfile.
+      - run: rbs -r date -I sig validate
+      - run: gem build soml-lang.gemspec
