@@ -9,7 +9,7 @@
 require_relative '../lib/soml'
 require 'json'
 
-FIXTURES = Dir[File.join(__dir__, 'fixtures', '*.soml')].sort.to_h { [File.basename(it, '.soml'), File.binread(it)] }
+FIXTURES = Dir[File.join(__dir__, 'fixtures', '*.soml')].to_h { [File.basename(it, '.soml'), File.binread(it)] }
 
 def cpu_time
 	start = Process.clock_gettime(Process::CLOCK_PROCESS_CPUTIME_ID)
@@ -45,7 +45,7 @@ puts "#{RUBY_DESCRIPTION} (#{mode})"
 puts
 puts 'This gem on each fixture, in microseconds:'
 puts
-puts format('%-12s %8s %10s %10s %10s %10s', '', 'size', 'parse', 'generate', 'format', 'edit')
+puts format('%-12s %8s %10s %10s %10s %10s %10s', '', 'size', 'parse', 'generate', 'format', 'edit', 'parse_tree')
 
 FIXTURES.each do |name, text|
 	value = SOML.parse(text)
@@ -56,10 +56,11 @@ FIXTURES.each do |name, text|
 		measure { SOML.parse(text) },
 		measure { SOML.generate(value) },
 		measure { SOML.format(text) },
-		measure { SOML.edit(text, path, 'edited') }
+		measure { SOML.edit(text, path, 'edited') },
+		measure { SOML.parse_tree(text) }
 	]
 
-	puts format('%-12s %6.1fKB %10.1f %10.1f %10.1f %10.1f', name, text.bytesize / 1000.0, *times.map { it * 1_000_000 })
+	puts format('%-12s %6.1fKB %10.1f %10.1f %10.1f %10.1f %10.1f', name, text.bytesize / 1000.0, *times.map { it * 1_000_000 })
 end
 
 # Each format reads its own file of the fixture, and writes back the data that it read.

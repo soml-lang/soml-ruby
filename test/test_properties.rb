@@ -452,7 +452,82 @@ class TestProperties < Minitest::Test
 		end
 	end
 
+	# The tokens and the comments of every spelling cover the source in order with only whitespace between them, every node holds the value that `parse` reads, and every position is the line and column of the text before it.
+	def test_the_syntax_tree_of_every_spelling_covers_the_source
+		random = Random.new(SEED + 8)
+		values = Values.new(random)
+		respeller = Respeller.new(random)
+
+		EXAMPLES.times do
+			text = respeller.document(values.document)
+			tree = SOML.parse_tree(text)
+			message = "seed #{SEED}: #{text.inspect}"
+			position = 0
+
+			(tree.tokens + tree.comments).sort_by(&:start).each do |token|
+				assert_match(/\A[ \t\n]*\z/, text.byteslice(position...token.start), message)
+				position = token.finish
+			end
+
+			assert_match(/\A[ \t\n]*\z/, text.byteslice(position..), message)
+			assert_same_value SOML.parse(text), tree_value(tree.body), message
+
+			tree.each_node.each_cons(2) do |node, following|
+				assert_operator node.start, :<=, following.start, message
+			end
+
+			tree.each_node do |node|
+				before = text.byteslice(0, node.start)
+				assert_equal [before.count("\n") + 1, before.length - (before.rindex("\n") || -1)], tree.position(node.start), message
+			end
+		end
+	end
+
+	# An edit through a member or a value node is the same as an edit through its path.
+	def test_an_edit_through_a_node_is_an_edit_through_its_path
+		random = Random.new(SEED + 9)
+		values = Values.new(random)
+		respeller = Respeller.new(random)
+
+		EXAMPLES.times do
+			text = respeller.document(values.document)
+			tree = SOML.parse_tree(text)
+			nodes = node_paths(tree.body, [])
+			next if nodes.empty?
+
+			node, path = nodes.sample(random:)
+			new_value = values.value(path.length + 1)
+			message = "seed #{SEED}: #{text.inspect} #{path.inspect}"
+
+			assert_equal SOML.edit(text, path, new_value), SOML.edit(text, node, new_value), message
+			assert_equal SOML.edit(text, path, delete: true), SOML.edit(text, node, delete: true), message
+		end
+	end
+
 	private
+
+	def tree_value(node)
+		case node.type
+		when :object
+			node.members.to_h { [it.key.value, tree_value(it.value)] }
+		when :array
+			node.elements.map { tree_value(it) }
+		else
+			node.value
+		end
+	end
+
+	# Every member and non-root value node under `node`, each with its path.
+	def node_paths(node, path)
+		case node.type
+		when :object
+			node.members.flat_map { [[it, [*path, it.key.value]], [it.value, [*path, it.key.value]], *node_paths(it.value, [*path, it.key.value])] }
+		when :array
+			node.elements.each_with_index.flat_map { |element, index| [[element, [*path, index]], *node_paths(element, [*path, index])] }
+		else
+			[]
+		end
+	end
 
 	# A path to an existing value, to a new member, or to a new item at the end of an array, with a new value or a removal.
 	def random_edit(value, values, random)

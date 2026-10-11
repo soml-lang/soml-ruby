@@ -24,15 +24,18 @@ module SOML
 
 		DECIMAL_DIGIT = byte_table('0123456789')
 
+		# The first letters of the units, and of a day and a week.
+		DURATION_UNIT_START = byte_table('dhmnsuwDHMNSUW')
+
 		# Exact as floats. The fast path divides by at most 10^14.
-		POWERS_OF_TEN = Array.new(15) { |exponent| (10**exponent).to_f }.freeze
+		POWERS_OF_TEN = Array.new(15) { (10**it).to_f }.freeze
 		LETTER = byte_table('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz')
 
-		# The digits, the base, the name, its article, and the characters that an error does not name as an invalid digit. A lowercase hexadecimal digit is a digit in the wrong case, so it is not named. Shareable, so that a ractor can read it.
+		# The digits, the base, the name, its article, and a search for a character that an error names as an invalid digit, by the byte of the letter of the prefix. A lowercase hexadecimal digit is a digit in the wrong case, so it is not named. Shareable, so that a ractor can read it.
 		RADIXES = Ractor.make_shareable({
-			'x' => [byte_table('0123456789ABCDEF'), 16, 'hexadecimal', 'A', /[0-9A-Fa-f_]/],
-			'o' => [byte_table('01234567'), 8, 'octal', 'An', /[0-7_]/],
-			'b' => [byte_table('01'), 2, 'binary', 'A', /[01_]/]
+			0x78 => [byte_table('0123456789ABCDEF'), 16, 'hexadecimal', 'A', /[^0-9A-Fa-f_]/], # x
+			0x6F => [byte_table('01234567'), 8, 'octal', 'An', /[^0-7_]/], # o
+			0x62 => [byte_table('01'), 2, 'binary', 'A', /[^01_]/] # b
 		})
 
 		# The longest token the diagnostic regexes look at, so that a huge invalid token is described from its first part.
@@ -41,7 +44,7 @@ module SOML
 		DURATION_UNIT_NAMES = DURATION_UNITS.keys.freeze
 
 		INSTANT_PREFIX = /\A[0-9]{4}-[0-9]{2}-[0-9]{2}/
-		INSTANT = /\A([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?(Z|[+-]([0-9]{2}):([0-9]{2}))\z/
+		INSTANT = /\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})\z/
 		LOCAL_DATE_TIME = /\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?\z/
 		INSTANT_FORMAT = 'An instant is written as 2026-09-19T14:00:00Z, with an optional fraction of up to nine digits and an offset of Z or ±HH:MM'
 		# Uppercase digits too, so that the value of such an escape is checked before its spelling.
@@ -49,7 +52,7 @@ module SOML
 
 		# Every C0 control character except tab and line feed, and DEL. They are errors anywhere in a document. The set is for `String#count`, which looks up each byte in a table and is several times as fast as a regex search, so the regex only runs to find where an error is.
 		CONTROL_CHARACTERS = "\x00-\x08\x0B-\x1F\x7F"
-		CONTROL_CHARACTER = /[\x00-\x08\x0B-\x1F\x7F]/
+		CONTROL_CHARACTER = /[#{CONTROL_CHARACTERS}]/
 
 		ESCAPED_STRING_SPECIAL = /[\n"\\]/
 		KEY_QUOTING_HINT = '. A key that contains characters other than letters, digits, “_”, and “-” must be quoted'
@@ -151,7 +154,7 @@ module SOML
 		# @param path [Array<String, Integer>]
 		# @return [String]
 		def self.describe_path(path)
-			description = path.each_with_index.map do |segment, index|
+			description = path.map.with_index do |segment, index|
 				if Integer === segment
 					"[#{segment}]"
 				else
@@ -159,29 +162,28 @@ module SOML
 				end
 			end.join
 
-			abbreviate(description, 200).gsub(UNPRINTABLE) { |character| "\\u{#{character.ord.to_s(16)}}" }
+			abbreviate(description, 200).gsub(UNPRINTABLE) { "\\u{#{it.ord.to_s(16)}}" }
 		end
 
 		# Shorten text quoted in an error message, so a huge token does not make a huge message. The length is counted in UTF-16 code units, as the JS reference counts it, so that the two give the same message, and the cut never splits a character.
 		def self.abbreviate(text, maximum_length = 40)
-			# A character outside the BMP is two code units, and its UTF-8 lead byte is 0xF0 to 0xF4. `String#count` with that range of characters instead would build a table of a million entries.
-			return text if text.length + text.b.count("\xF0-\xF4".b) <= maximum_length
+			return text if utf16_length(text) <= maximum_length
 
 			length = 0
-			kept = text.each_char.take_while { |character| (length += character.bytesize == 4 ? 2 : 1) <= maximum_length }
+			kept = text.each_char.take_while { (length += it.bytesize == 4 ? 2 : 1) <= maximum_length }
 			"#{kept.join}…"
 		end
 
+		# The length of `text` in UTF-16 code units, as JS counts it. A character outside the BMP is two code units, and its UTF-8 lead byte is 0xF0 to 0xF4. `String#count` with that range of characters instead would build a table of a million entries.
+		def self.utf16_length(text) = text.length + text.b.count("\xF0-\xF4".b)
+
 		# The string as `JSON.stringify` writes it, as the JS reference shows a quoted key, so that a control character, such as a line feed, shows as its escape.
-		def self.json_quote(text)
-			escaped = text.gsub(/["\\\x00-\x1F]/) do |character|
-				JSON_ESCAPES[character] || format('\\u%04x', character.ord)
-			end
+		def self.json_quote(text) = "\"#{json_escape(text, /["\\\x00-\x1F]/)}\""
 
-			"\"#{escaped}\""
-		end
+		# `text` with the characters that `pattern` matches, which are control characters, `"`, or `\`, written as `JSON.stringify` writes them.
+		def self.json_escape(text, pattern) = text.gsub(pattern) { JSON_ESCAPES[it] || format('\\u%04x', it.ord) }
 
-		# A value as Ruby names it in a conversion error, such as `nil` or `Integer` in "nil can't be coerced into Integer", in UTF-8. The class is read with `Kernel#class`, which a `BasicObject` does not have. {Duration} names a value the same way.
+		# A value as Ruby names it in a conversion error, such as `nil` or `Integer` in "nil can't be coerced into Integer", in UTF-8. The class is named with `Module#to_s`, as Ruby names it, because a class can define its own `to_s` that returns anything. {Duration} names a value the same way.
 		#
 		# @param value [Object]
 		# @return [String]
@@ -190,9 +192,21 @@ module SOML
 			when nil, true, false
 				value.inspect
 			else
-				lossy_utf8(Kernel.instance_method(:class).bind_call(value).to_s)
+				Error.sanitize(lossy_utf8(Module.instance_method(:to_s).bind_call(class_of(value))))
 			end
 		end
+
+		# The class of a value, read with `Kernel#class`, which a `BasicObject` does not have.
+		#
+		# @param value [Object]
+		# @return [Class]
+		def self.class_of(value) = Kernel.instance_method(:class).bind_call(value)
+
+		# The name of a class, read with `Module#name`, because a class can define its own `name` that returns anything, or `nil` for an anonymous class.
+		#
+		# @param type [Module]
+		# @return [String, nil]
+		def self.module_name(type) = Module.instance_method(:name).bind_call(type)
 
 		# Text in UTF-8, so that an error message can join it, such as a class name from a source file in Shift_JIS. Text that does not convert, such as a binary path from `ARGV` with `LANG=C`, or one in an encoding without a converter to UTF-8, has its bytes read as UTF-8, with what is not valid replaced.
 		#
@@ -214,7 +228,10 @@ module SOML
 		# @return [String]
 		def self.describe_argument(value)
 			case value
-			when String, Symbol, Integer, Float, Rational, nil, true, false
+			when String, Symbol
+				# `inspect` escapes a control character, but not a bidirectional control.
+				Error.sanitize(value.inspect)
+			when Integer, Float, Rational, nil, true, false
 				value.inspect
 			else
 				conversion_name(value)
@@ -264,14 +281,8 @@ module SOML
 		#
 		# @return [SOML::Duration]
 		def parse_duration_literal
-			finish = 0
-
-			while (byte = @source.getbyte(finish)) && NUMBER_BYTE[byte]
-				finish += 1
-			end
-
 			# An empty source and an instant are not duration-like either.
-			if finish < @length || !duration_like?(@source)
+			if number_end(0) < @length || !duration_like?(@source)
 				fail_at("Expected a duration, such as 1h30m, but found #{@source.empty? ? 'nothing' : quote_found(abbreviate(@source))}", 0)
 			end
 
@@ -322,10 +333,10 @@ module SOML
 
 			# A sequence that the end of the input cuts short is reported as what it is.
 			if truncated_utf8?(@source.byteslice(offset, @length - offset))
-				raise ParseError.new('Incomplete UTF-8 sequence at the end of the input', valid, valid.bytesize, @path)
+				raise ParseError.new('Incomplete UTF-8 sequence at the end of the input', valid, offset, @path)
 			end
 
-			raise ParseError.new(format('Invalid UTF-8 byte 0x%02X', @source.getbyte(offset)), valid, valid.bytesize, @path)
+			raise ParseError.new(format('Invalid UTF-8 byte 0x%02X', @source.getbyte(offset)), valid, offset, @path)
 		end
 
 		# Whether some bytes could follow `rest` to make it one valid character.
@@ -348,13 +359,7 @@ module SOML
 			end
 		end
 
-		def fail_at(reason, offset = @index)
-			raise ParseError.new(reason, @source, offset, @path)
-		end
-
-		def fail_too_deep(offset = @index)
-			fail_at("The document is nested more than #{MAX_DEPTH} levels deep", offset)
-		end
+		def fail_at(reason, offset = @index) = raise(ParseError.new(reason, @source, offset, @path))
 
 		# `bare-object = entry ( entry-sep entry )*`, where a separator is one or more line breaks.
 		def parse_bare_object
@@ -512,7 +517,11 @@ module SOML
 		# An entry whose value was left out, as in `a:` followed by `'b': 1` on the next line, reads the next key as the value. That failure is reported as what it is.
 		def diagnose_missing_value(start, parent, key_start, comment_hint)
 			# A YAML block sequence.
-			fail_at('Expected a value, but found a “-” list. An array is written in brackets, as in [80, 443]', start) if @source.getbyte(start) == 0x2D && space?(@source.getbyte(start + 1))
+			first = @source.getbyte(start)
+			fail_at('Expected a value, but found a “-” list. An array is written in brackets, as in [80, 443]', start) if first == 0x2D && space?(@source.getbyte(start + 1))
+
+			# Only a key can be followed by its `:`. Reading anything else as a key would make an error, which counts the lines of the whole source, at every level of a nested value.
+			return unless first == 0x27 || first == 0x22 || (first && BARE_KEY_BYTE[first])
 
 			@index = start
 
@@ -527,7 +536,6 @@ module SOML
 
 			# Whitespace or the end follows the `:` of a bare key. A digit follows the `:` in an instant such as `2026-09-19T25:00:00Z`, whose own error is more precise. A quoted key cannot be part of a value, so anything may follow its `:`.
 			following = @source.getbyte(@index + 1)
-			first = @source.getbyte(start)
 
 			return unless first == 0x27 || first == 0x22 || space_or_line_end?(following)
 
@@ -542,18 +550,12 @@ module SOML
 			return '' if key_indentation.nil? || indentation.nil? || indentation <= key_indentation
 
 			# The keys are written as in a document, so that the suggestion is valid, rather than as JSON strings like the rest of the message, whose escapes, such as `\b`, are not all valid.
-			". Indentation does not nest objects, so write #{abbreviate(format_key(parent), 200)}: {#{abbreviate(format_key(key), 200)}: …}"
-		end
-
-		# A key as a document writes it, bare when it can be, as {Generator} writes it.
-		def format_key(key)
-			SOML.bare_key?(key) ? key : Generator.new.generate_value(key, 0)
+			". Indentation does not nest objects, so write #{abbreviate(Generator.format_key(parent), 200)}: {#{abbreviate(Generator.format_key(key), 200)}: …}"
 		end
 
 		def fail_missing_colon(key_start)
 			source = @source
-			following = @index
-			following += 1 while space?(source.getbyte(following))
+			following = skip_spaces(@index)
 			following_byte = source.getbyte(following)
 
 			fail_at('Whitespace is not allowed between a key and its “:”') if following_byte == 0x3A && following > @index
@@ -562,11 +564,7 @@ module SOML
 			if following_byte == 0x2F && source.getbyte(following + 1) == 0x2A
 				comment_end = source.byteindex('*/', following + 2)
 
-				if comment_end
-					after_comment = comment_end + 2
-					after_comment += 1 while space?(source.getbyte(after_comment))
-					fail_at('A comment is not allowed between a key and its “:”', following) if source.getbyte(after_comment) == 0x3A
-				end
+				fail_at('A comment is not allowed between a key and its “:”', following) if comment_end && source.getbyte(skip_spaces(comment_end + 2)) == 0x3A
 			end
 
 			colon = source.byteindex(':', following)
@@ -623,14 +621,12 @@ module SOML
 			colon = @source.byteindex(':', @index)
 			key = @source.byteslice(@index, colon - @index) if colon && colon < line_end(@index)
 			# A longer key gets the hint without the example, as in JS, where the key and its `:` must fit in 1000 UTF-16 code units.
-			key = nil if key && (key.length + key.b.count("\xF0-\xF4".b) >= MAX_DIAGNOSED_LENGTH || key.match?(NOT_QUOTABLE_KEY_CHARACTER))
+			key = nil if key && (Parser.utf16_length(key) >= MAX_DIAGNOSED_LENGTH || key.match?(NOT_QUOTABLE_KEY_CHARACTER))
 			key.nil? ? KEY_QUOTING_HINT : "#{KEY_QUOTING_HINT}, as in '#{abbreviate(key)}'"
 		end
 
 		# `offset` is before the end of the source.
-		def quotable_key_character?(offset)
-			character_at(offset).match?(QUOTABLE_KEY_CHARACTER)
-		end
+		def quotable_key_character?(offset) = character_at(offset).match?(QUOTABLE_KEY_CHARACTER)
 
 		# A `.` after a key, as in `example.com: 1`. A key is never a path, so the `.` is meant either as part of the key or as nesting.
 		def fail_dot_in_key(key_start)
@@ -652,7 +648,7 @@ module SOML
 
 			nested = "#{words.last}: …"
 
-			words[0...-1].reverse_each do |word|
+			words[...-1].reverse_each do |word|
 				nested = "#{word}: {#{nested}}"
 			end
 
@@ -660,9 +656,7 @@ module SOML
 		end
 
 		# Found text between curly quotes, as prose quotes it, with its control characters, such as a line feed, written as their JSON escapes, so that they show rather than become U+FFFD, and a backslash escaped, so that it does not read as one of them.
-		def quote_found(text)
-			"“#{text.gsub(/[\\\x00-\x1F]/) { JSON_ESCAPES[it] || format('\\u%04x', it.ord) }}”"
-		end
+		def quote_found(text) = "“#{Parser.json_escape(text, /[\\\x00-\x1F]/)}”"
 
 		def parse_object(depth)
 			object = {}
@@ -678,7 +672,7 @@ module SOML
 
 		# `{` or `[` at depth `depth`, then items, which the block reads, separated by a comma, a line break, or both, with an optional trailing comma, then the `closing` bracket. A comma must be on the line of the item before it.
 		def parse_items(depth, closing, kind, item)
-			fail_too_deep if depth > MAX_DEPTH
+			fail_at("The document is nested more than #{MAX_DEPTH} levels deep") if depth > MAX_DEPTH
 
 			source = @source
 			start = @index
@@ -774,10 +768,12 @@ module SOML
 				unit_end += 1
 			end
 
+			return if unit_end == unit_start
+
 			unit = source.byteslice(unit_start, unit_end - unit_start)
 
 			# A keyword after a number is a missing comma.
-			return if unit.empty? || !value_end?(skip_spaces(unit_end)) || %w[true false null infinity].include?(unit)
+			return if !value_end?(skip_spaces(unit_end)) || %w[true false null infinity].include?(unit)
 
 			number = source.byteslice(start, @index - start)
 			# The duration is only suggested when it is valid, which a number with an exponent or a radix prefix, a fraction of a nanosecond, a negative zero, or a value outside the 64-bit range is not. The string is always offered, because a unit such as `m` may mean meters rather than minutes.
@@ -830,23 +826,8 @@ module SOML
 
 		# The text from `start` that was most likely meant as one unquoted string, such as `John Smith`: up to the end of the line, a comma, a closing bracket, or a comment after a space or a tab, without the spaces and tabs at its end. It is read up to 1000 UTF-16 code units, as in JS, and never ends inside a character.
 		def unquoted_text(start = @index)
-			source = @source
-			finish = start
-			length = 0
-
-			while (byte = source.getbyte(finish))
-				# A continuation byte is part of the character before it.
-				unless byte.between?(0x80, 0xBF)
-					break if length >= MAX_DIAGNOSED_LENGTH || unquoted_text_end?(finish)
-
-					# A character outside the BMP is two UTF-16 code units, and its UTF-8 lead byte is 0xF0 to 0xF4.
-					length += byte >= 0xF0 ? 2 : 1
-				end
-
-				finish += 1
-			end
-
-			source.byteslice(start, skip_spaces_back(finish) - start)
+			finish = code_unit_end(start) { unquoted_text_end?(it) }
+			@source.byteslice(start, skip_spaces_back(finish) - start)
 		end
 
 		def unquoted_text_end?(offset)
@@ -877,14 +858,10 @@ module SOML
 		end
 
 		# The hint for a `//` comment, as in JavaScript.
-		def slash_comment_hint
-			@source.getbyte(@index) == 0x2F && @source.getbyte(@index + 1) == 0x2F ? '. A comment starts with “#”' : ''
-		end
+		def slash_comment_hint = @source.getbyte(@index) == 0x2F && @source.getbyte(@index + 1) == 0x2F ? '. A comment starts with “#”' : ''
 
 		# The example in a message that a string must be quoted, which quotes `text` as a `'...'` string. That cannot hold a `'`, so then there is no simple example.
-		def quoting_example(text)
-			text.include?("'") ? '' : ", as in '#{abbreviate(text)}'"
-		end
+		def quoting_example(text) = text.include?("'") ? '' : ", as in '#{abbreviate(text)}'"
 
 		def describe_here
 			return 'the end of the document' if @index >= @length
@@ -893,9 +870,7 @@ module SOML
 			character == "\n" ? 'a line break' : describe_character(character)
 		end
 
-		def character_at(offset)
-			@source.byteslice(offset, 4)[0]
-		end
+		def character_at(offset) = @source.byteslice(offset, 4)[0]
 
 		def parse_string
 			source = @source
@@ -952,17 +927,19 @@ module SOML
 					return value
 				end
 
-				text, chunk_start = parse_escape(special)
-				value << text
+				chunk_start = parse_escape(special, value)
 			end
 		end
 
-		# Decodes the escape at `offset`, which is a backslash, and returns its text and the offset after it.
-		def parse_escape(offset)
+		# Decodes the escape at `offset`, which is a backslash, onto `value`, and returns the offset after it.
+		def parse_escape(offset, value)
 			source = @source
 			byte = source.getbyte(offset + 1)
 			simple = SIMPLE_ESCAPES[byte]
-			return [simple, offset + 2] if simple
+			if simple
+				value << simple
+				return offset + 2
+			end
 
 			if byte == 0x75 # u
 				# The slice may cut a character in two, which a regex refuses to read.
@@ -979,7 +956,8 @@ module SOML
 				fail_at('A Unicode escape uses lowercase hexadecimal digits', offset) if hex.match?(/[A-F]/)
 				fail_at("A Unicode escape may not have leading zeros; write \\u{#{hex.sub(/\A0+(?=.)/, '')}}", offset) if hex.length > 1 && hex.start_with?('0')
 
-				return [code_point.chr(Encoding::UTF_8), offset + 1 + match[0].bytesize]
+				value << code_point
+				return offset + 1 + match[0].bytesize
 			end
 
 			# A backslash at the end of the document is the same mistake as one at the end of a line.
@@ -1073,8 +1051,7 @@ module SOML
 			line_start = offset
 
 			while line_start < @length
-				delimiter_start = line_start
-				delimiter_start += 1 while space?(source.getbyte(delimiter_start))
+				delimiter_start = skip_spaces(line_start)
 				run_length = 0
 				run_length += 1 while source.getbyte(delimiter_start + run_length) == quote
 				return [line_start, delimiter_start] if run_length == length
@@ -1094,9 +1071,7 @@ module SOML
 
 			while (index = text.byteindex('\\', chunk_start))
 				value << text.byteslice(chunk_start, index - chunk_start)
-				escaped, finish = parse_escape(offset + index)
-				value << escaped
-				chunk_start = finish - offset
+				chunk_start = parse_escape(offset + index, value) - offset
 			end
 
 			value << text.byteslice(chunk_start, text.bytesize - chunk_start)
@@ -1106,15 +1081,9 @@ module SOML
 			plain = parse_plain_number
 			return plain unless plain.nil?
 
-			source = @source
 			start = @index
-			finish = start + 1
-
-			while (byte = source.getbyte(finish)) && NUMBER_BYTE[byte]
-				finish += 1
-			end
-
-			text = source.byteslice(start, finish - start)
+			finish = number_end(start)
+			text = @source.byteslice(start, finish - start)
 			@index = finish
 
 			return parse_instant(text, start) if text.match?(INSTANT_PREFIX)
@@ -1228,7 +1197,7 @@ module SOML
 
 		# Whether `text` is a decimal int, a radix int, or a float, following the grammar. A run of digits may have single underscores between digits.
 		def classify_number(text)
-			radix = text.getbyte(0) == 0x30 && RADIXES[text[1]]
+			radix = text.getbyte(0) == 0x30 && RADIXES[text.getbyte(1)]
 
 			if radix
 				finish = skip_digits(text, 2, radix[0])
@@ -1288,14 +1257,12 @@ module SOML
 		end
 
 		# Returns the index after an integer part, which is `0` or digits without a leading zero, or `index` when there is none. Anything after a leading `0`, such as the `5` in `05`, is left for the caller to reject.
-		def skip_integer_part(text, index)
-			text.getbyte(index) == 0x30 ? index + 1 : skip_digits(text, index, DECIMAL_DIGIT)
-		end
+		def skip_integer_part(text, index) = text.getbyte(index) == 0x30 ? index + 1 : skip_digits(text, index, DECIMAL_DIGIT)
 
 		# More than 64 significant digits is out of range in any radix, which is decided before a huge digit string is converted.
 		def parse_integer(text, start)
 			digits = text.delete('_')
-			radix = RADIXES[digits[1]] if digits.bytesize > 1
+			radix = RADIXES[digits.getbyte(1)]
 			significant = digits.getbyte(0) == 0x2D ? 1 : 0
 
 			if radix
@@ -1320,7 +1287,7 @@ module SOML
 			# Negative zero is the same value as zero.
 			return 0.0 if first.nil?
 
-			significant = trim_trailing_zeros(digits.byteslice(first, digits.bytesize - first))
+			significant = digits.byteslice(first, digits.bytesize - first).rstrip('0')
 			# An exponent with more than 18 digits is far outside the float range either way, which is decided before converting a huge digit string, which takes quadratic time.
 			exponent_text = exponent_text.start_with?('-') ? '-1000000000000000000' : '1000000000000000000' if exponent_text && exponent_text.delete_prefix('-').bytesize > 18
 			exponent = exponent_text.to_i - (fraction&.bytesize || 0) + (digits.bytesize - first - significant.bytesize)
@@ -1372,9 +1339,7 @@ module SOML
 		end
 
 		def parse_instant(text, start)
-			match = text.bytesize > MAX_DIAGNOSED_LENGTH ? nil : INSTANT.match(text)
-
-			if match.nil?
+			unless text.bytesize <= MAX_DIAGNOSED_LENGTH && text.match?(INSTANT)
 				# A date, a space, and a time, as TOML and Python write a date and time.
 				time_start = @index + 1
 				finish = @source.getbyte(@index) == 0x20 && digit?(@source.getbyte(time_start)) ? number_end(time_start) : @index
@@ -1384,28 +1349,57 @@ module SOML
 				fail_at(describe_bad_instant(text, time, is_whole_value, offset_after_space), start)
 			end
 
-			year, month, day, hour, minute, second, fraction, offset, offset_hour, offset_minute = match.captures
-			check_instant(text, start, fraction.nil? || fraction.length <= 9, 'a fractional second has at most nine digits')
-			check_instant(text, start, year != '0000', 'the year must be 0001 to 9999')
-			check_instant(text, start, month.between?('01', '12'), 'the month must be 01 to 12')
-			last_day = days_in_month(year.to_i, month.to_i)
-			check_instant(text, start, day >= '01' && day.to_i <= last_day, "the day must be 01 to #{last_day} in that month")
-			check_instant(text, start, hour <= '23', 'the hour must be 00 to 23')
-			check_instant(text, start, minute <= '59', 'the minute must be 00 to 59')
-			check_instant(text, start, second <= '59', 'the second must be 00 to 59, and a leap second is not representable')
+			# The regex checked the layout, so each part is at a fixed offset, except the offset, which follows the optional fraction. Reading the digits as bytes makes no string for each part.
+			year = digits_value(text, 0, 4)
+			month = digits_value(text, 5, 2)
+			day = digits_value(text, 8, 2)
+			hour = digits_value(text, 11, 2)
+			minute = digits_value(text, 14, 2)
+			second = digits_value(text, 17, 2)
+			# The offset, `Z` or `±HH:MM`, ends the instant, and a fraction is between the seconds and it.
+			# `getbyte(-1)` made parsing a document of many instants a third slower, measured on Ruby 4.0 with YJIT.
+			length = text.bytesize
+			offset_start = text.getbyte(length - 1) == 0x5A ? length - 1 : length - 6
+			fraction_length = offset_start == 19 ? 0 : offset_start - 20
 
-			seconds = (days_from_civil(year.to_i, month.to_i, day.to_i) * 86_400) + (hour.to_i * 3600) + (minute.to_i * 60) + second.to_i
+			fail_instant(text, start, 'a fractional second has at most nine digits') if fraction_length > 9
+			fail_instant(text, start, 'the year must be 0001 to 9999') if year.zero?
+			fail_instant(text, start, 'the month must be 01 to 12') unless month.between?(1, 12)
+			last_day = days_in_month(year, month)
+			fail_instant(text, start, "the day must be 01 to #{last_day} in that month") unless day.between?(1, last_day)
+			fail_instant(text, start, 'the hour must be 00 to 23') if hour > 23
+			fail_instant(text, start, 'the minute must be 00 to 59') if minute > 59
+			fail_instant(text, start, 'the second must be 00 to 59, and a leap second is not representable') if second > 59
 
-			if offset != 'Z'
-				check_instant(text, start, offset_hour <= '23', 'the offset hour must be 00 to 23')
-				check_instant(text, start, offset_minute <= '59', 'the offset minute must be 00 to 59')
-				check_instant(text, start, offset != '-00:00', '-00:00 means “offset unknown” in RFC 3339, which is not representable; use Z or +00:00')
-				offset_seconds = (offset_hour.to_i * 3600) + (offset_minute.to_i * 60)
-				seconds += offset.start_with?('+') ? -offset_seconds : offset_seconds
+			seconds = (days_from_civil(year, month, day) * 86_400) + (hour * 3600) + (minute * 60) + second
+			sign = text.getbyte(offset_start)
+
+			# Not `Z`, so `±HH:MM`.
+			if sign != 0x5A
+				offset_hour = digits_value(text, offset_start + 1, 2)
+				offset_minute = digits_value(text, offset_start + 4, 2)
+				fail_instant(text, start, 'the offset hour must be 00 to 23') if offset_hour > 23
+				fail_instant(text, start, 'the offset minute must be 00 to 59') if offset_minute > 59
+				fail_instant(text, start, '-00:00 means “offset unknown” in RFC 3339, which is not representable; use Z or +00:00') if sign == 0x2D && offset_hour.zero? && offset_minute.zero?
+				offset_seconds = (offset_hour * 3600) + (offset_minute * 60)
+				seconds += sign == 0x2B ? -offset_seconds : offset_seconds
 			end
 
-			check_instant(text, start, seconds.between?(MIN_INSTANT_SECONDS, MAX_INSTANT_SECONDS), 'in UTC it falls outside the years 0001 to 9999')
-			Time.at(seconds, fraction.nil? ? 0 : fraction.ljust(9, '0').to_i, :nsec).utc
+			fail_instant(text, start, 'in UTC it falls outside the years 0001 to 9999') unless seconds.between?(MIN_INSTANT_SECONDS, MAX_INSTANT_SECONDS)
+			Time.at(seconds, fraction_length.zero? ? 0 : digits_value(text, 20, fraction_length) * (10**(9 - fraction_length)), :nsec).utc
+		end
+
+		# The value of the `count` decimal digits at `offset` in `text`, which the caller checked are digits.
+		def digits_value(text, offset, count)
+			value = 0
+			finish = offset + count
+
+			while offset < finish
+				value = (value * 10) + text.getbyte(offset) - 0x30
+				offset += 1
+			end
+
+			value
 		end
 
 		# A scan of the parts in order, so that each error names the part it is about.
@@ -1441,7 +1435,7 @@ module SOML
 					fail_duration(text, start, 'an underscore must be between two digits') if text.getbyte(unit_start) == 0x5F
 
 					# Trailing zeros change nothing, and leaving them out keeps the arithmetic small however many there are.
-					fraction = trim_trailing_zeros(text.byteslice(digits_end + 1, unit_start - digits_end - 1).delete('_'))
+					fraction = text.byteslice(digits_end + 1, unit_start - digits_end - 1).delete('_').rstrip('0')
 				end
 
 				unit_end = unit_start
@@ -1457,10 +1451,9 @@ module SOML
 				fail_duration(text, start, 'only the last part may have a fraction') if following == 0x2E && digit?(text.getbyte(unit_end))
 
 				size = DURATION_UNITS[unit]
-				digits = text.byteslice(index, digits_end - index).delete('_')
 
-				# More than 19 digits is out of range in any unit, which is decided before a huge digit string is converted.
-				total += digits.bytesize > 19 ? INT64_MAX * 2 : digits.to_i * size
+				# More than 19 digits, which with the single underscores that may be between them is more than 37 bytes, is out of range in any unit, which is decided before a huge digit string is converted. `to_i` reads the underscores.
+				total += digits_end - index > 37 ? INT64_MAX * 2 : text.byteslice(index, digits_end - index).to_i * size
 				index = unit_end
 				previous_rank = rank
 			end
@@ -1481,13 +1474,9 @@ module SOML
 			Duration.new(nanoseconds: is_negative ? -total : total)
 		end
 
-		def check_instant(text, start, is_valid, reason)
-			fail_at("Invalid instant #{abbreviate(text)}: #{reason}", start) unless is_valid
-		end
+		def fail_instant(text, start, reason) = fail_at("Invalid instant #{abbreviate(text)}: #{reason}", start)
 
-		def fail_duration(text, start, reason)
-			fail_at("Invalid duration #{abbreviate(text)}: #{reason}", start)
-		end
+		def fail_duration(text, start, reason) = fail_at("Invalid duration #{abbreviate(text)}: #{reason}", start)
 
 		# Whether a token that is not a number or an instant was meant as a duration: its first letter could begin a unit, or a day or a week. A radix prefix, an exponent, and other letters, such as the `T` in `20260919T140000Z` or the `x` in `1.5x`, are left to the number errors.
 		def duration_like?(text)
@@ -1505,22 +1494,12 @@ module SOML
 			return false if byte.nil?
 
 			# A year unit, as in `1y` or `2years`, is only one when the token or another part follows it, so that a word such as `100yen` stays a string to quote. The longest unit and the byte after it fit in 6 bytes.
-			'dhmnsuwDHMNSUW'.include?(byte.chr) || text.byteslice(index, 6).match?(/\A(?:y|yrs?|years?)(?:\z|[0-9])/i)
+			DURATION_UNIT_START[byte] || text.byteslice(index, 6).match?(/\A(?:y|yrs?|years?)(?:\z|[0-9])/i)
 		end
 
-		def trim_trailing_zeros(digits)
-			finish = digits.bytesize
-			finish -= 1 while finish.positive? && digits.getbyte(finish - 1) == 0x30
-			digits.byteslice(0, finish)
-		end
+		def line_end(offset) = @source.byteindex("\n", offset) || @length
 
-		def line_end(offset)
-			@source.byteindex("\n", offset) || @length
-		end
-
-		def line_start(offset)
-			offset.zero? ? 0 : (@source.byterindex("\n", offset - 1) || -1) + 1
-		end
+		def line_start(offset) = offset.zero? ? 0 : (@source.byterindex("\n", offset - 1) || -1) + 1
 
 		# The number of spaces and tabs before `offset` on its line, or `nil` when something else comes before it.
 		def indentation_at(offset)
@@ -1528,9 +1507,9 @@ module SOML
 			skip_spaces(start) == offset ? offset - start : nil
 		end
 
-		# The end of the number, instant, or duration that starts at `start`.
+		# The end of the number, instant, or duration that starts at `start`: the end of the run of the bytes that one can hold.
 		def number_end(start)
-			finish = start + 1
+			finish = start
 
 			while (byte = @source.getbyte(finish)) && NUMBER_BYTE[byte]
 				finish += 1
@@ -1539,15 +1518,15 @@ module SOML
 			finish
 		end
 
-		# The offset after `maximum` UTF-16 code units from `start`, as JS slices the source. A character outside the BMP that JS cuts in two at the limit is kept whole, so that, like the lone surrogate JS keeps, it is still there to stop a match at the end.
-		def code_unit_end(start, maximum = MAX_DIAGNOSED_LENGTH)
+		# The offset after `maximum` UTF-16 code units from `start`, as JS slices the source, or before the first character for which the block returns true. A character outside the BMP that JS cuts in two at the limit is kept whole, so that, like the lone surrogate JS keeps, it is still there to stop a match at the end.
+		def code_unit_end(start)
 			finish = start
 			length = 0
 
 			while (byte = @source.getbyte(finish))
 				# A continuation byte is part of the character before it.
 				unless byte.between?(0x80, 0xBF)
-					break if length >= maximum
+					break if length >= MAX_DIAGNOSED_LENGTH || (block_given? && yield(finish))
 
 					# A character outside the BMP is two UTF-16 code units, and its UTF-8 lead byte is 0xF0 to 0xF4.
 					length += byte >= 0xF0 ? 2 : 1
@@ -1565,40 +1544,28 @@ module SOML
 			byte.nil? || (VALUE_END_BYTE[byte] && (byte != 0x2F || (following = @source.getbyte(offset + 1)) == 0x2A || following == 0x2F))
 		end
 
-		def byte_before(offset)
-			offset.positive? ? @source.getbyte(offset - 1) : nil
-		end
+		def byte_before(offset) = offset.positive? ? @source.getbyte(offset - 1) : nil
 
 		def skip_spaces(offset)
 			offset += 1 while space?(@source.getbyte(offset))
 			offset
 		end
 
-		def space?(byte)
-			byte == 0x20 || byte == 0x09
-		end
+		def space?(byte) = byte == 0x20 || byte == 0x09
 
 		# Whether a byte is a space, a tab, a line feed, or the end.
-		def space_or_line_end?(byte)
-			byte.nil? || byte == 0x0A || space?(byte)
-		end
+		def space_or_line_end?(byte) = byte.nil? || byte == 0x0A || space?(byte)
 
 		def skip_spaces_back(offset)
 			offset -= 1 while offset.positive? && space?(@source.getbyte(offset - 1))
 			offset
 		end
 
-		def digit?(byte)
-			!byte.nil? && byte >= 0x30 && byte <= 0x39
-		end
+		def digit?(byte) = !byte.nil? && byte >= 0x30 && byte <= 0x39
 
-		def digit_or_underscore?(byte)
-			byte == 0x5F || digit?(byte)
-		end
+		def digit_or_underscore?(byte) = byte == 0x5F || digit?(byte)
 
-		def words_with_spaces?(text)
-			text.each_byte.all? { |byte| space?(byte) || BARE_KEY_BYTE[byte] }
-		end
+		def words_with_spaces?(text) = text.each_byte.all? { space?(it) || BARE_KEY_BYTE[it] }
 
 		def days_in_month(year, month)
 			if month == 2
@@ -1621,9 +1588,7 @@ module SOML
 
 		def abbreviate(...) = Parser.abbreviate(...)
 
-		def format_code_point(code_point)
-			format('U+%04X', code_point)
-		end
+		def format_code_point(code_point) = format('U+%04X', code_point)
 
 		# Describe a character for an error message, such as `“$”` or `U+00A0 (NO-BREAK SPACE)`.
 		def describe_character(character)
@@ -1644,13 +1609,14 @@ module SOML
 			# A keyword hint is only for the word on its own. In `Yes please` or `Nan Goldin`, following it would leave text behind or change the value.
 			lowercase = text == word ? word.downcase : ''
 
-			if %w[true false yes no on off].include?(lowercase)
+			case lowercase
+			when 'true', 'false', 'yes', 'no', 'on', 'off'
 				"“#{word}” is not a value. Booleans are written true and false, in lowercase"
-			elsif %w[null nil none undefined].include?(lowercase)
+			when 'null', 'nil', 'none', 'undefined'
 				"“#{word}” is not a value. Null is written null, in lowercase"
-			elsif lowercase == 'nan'
+			when 'nan'
 				'NaN is not representable. Use null for a missing value'
-			elsif %w[inf infinity].include?(lowercase)
+			when 'inf', 'infinity'
 				"“#{word}” is not a value. Infinity is written infinity, in lowercase"
 			else
 				"Unexpected “#{abbreviate(word)}”. A string value must be quoted#{quoting_example(text)}"
@@ -1723,22 +1689,28 @@ module SOML
 			return 'A number prefix is lowercase: 0x, 0o, or 0b' if text.match?(/\A-?0[BOX]/)
 
 			# The whole number, not the part cut at the diagnosed length, because a cut can end before the digit or the underscore that the message is about. Each check below takes linear time.
-			if (match = /\A(-?)0([box])(.*)\z/.match(full_text))
-				sign, radix, digits = match.captures
-				_, _, name, article, valid_character = RADIXES[radix]
+			sign_length = full_text.getbyte(0) == 0x2D ? 1 : 0
+			radix = full_text.getbyte(sign_length) == 0x30 && RADIXES[full_text.getbyte(sign_length + 1)]
 
-				return "#{article} #{name} integer cannot have a sign, because it states a bit pattern rather than a quantity" if sign == '-'
-				return "Expected #{name} digits after “0#{radix}”" if digits.empty?
+			if radix
+				_, base, name, article, invalid_character = radix
+				prefix_end = sign_length + 2
+				digits = full_text.byteslice(prefix_end, full_text.bytesize - prefix_end)
 
-				if radix == 'x' && digits.match?(/[a-f]/) && !digits.match?(/[^0-9a-fA-F_]/)
+				return "#{article} #{name} integer cannot have a sign, because it states a bit pattern rather than a quantity" if sign_length == 1
+				return "Expected #{name} digits after “#{full_text.byteslice(0, 2)}”" if digits.empty?
+
+				# A search for one character, because a repeat over a long number needs memory for every character.
+				character = digits[invalid_character]
+
+				if base == 16 && character.nil? && digits.match?(/[a-f]/)
 					# The uppercase spelling is only suggested when it is valid, so a misplaced underscore is reported first, and a value outside the 64-bit range gets no example.
-					return 'An underscore in a number must be between two digits' unless digits.match?(/\A[0-9a-fA-F]+(?:_[0-9a-fA-F]+)*\z/)
+					return 'An underscore in a number must be between two digits' if digits.start_with?('_') || digits.end_with?('_') || digits.include?('__')
 
 					uppercase = "0x#{digits.upcase}"
 					return valid_value?(uppercase) ? "Hexadecimal digits are uppercase: #{abbreviate(uppercase)}" : 'Hexadecimal digits are uppercase'
 				end
 
-				character = digits.each_char.find { |each_character| !each_character.match?(valid_character) }
 				return character.nil? ? 'An underscore in a number must be between two digits' : "Invalid #{name} digit “#{character}”"
 			end
 
@@ -1835,11 +1807,11 @@ module SOML
 			separator = 'The date and time separator in an instant is an uppercase “T”, not a space'
 			instant = "#{date}T#{time}"
 
-			if instant.bytesize > MAX_DIAGNOSED_LENGTH
-				"#{separator}. #{INSTANT_FORMAT}"
-			elsif valid_value?(instant)
+			is_short = instant.bytesize <= MAX_DIAGNOSED_LENGTH
+
+			if is_short && valid_value?(instant)
 				"#{separator}, as in #{abbreviate(instant)}"
-			elsif is_whole_value && instant.match?(LOCAL_DATE_TIME) && valid_value?("#{instant}Z")
+			elsif is_short && is_whole_value && instant.match?(LOCAL_DATE_TIME) && valid_value?("#{instant}Z")
 				"#{separator}, and an instant needs the offset it was meant in, as in #{abbreviate(instant)}Z for UTC. A date and time without an offset is a local time, which is not an instant, so write it as a string, as in '#{abbreviate("#{date} #{time}")}'"
 			else
 				"#{separator}. #{INSTANT_FORMAT}"

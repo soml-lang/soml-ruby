@@ -501,6 +501,67 @@ class TestGenerate < Minitest::Test
 		assert_equal 'A key must be a String or a Symbol, not an anonymous BasicObject, because a key is never converted', generate_error(hash).reason
 	end
 
+	# A class may define its own `name` or `to_s`, which can return anything. The error names the class as Ruby does.
+	class OwnName
+		def self.name = 42
+		def self.to_s = nil
+	end
+
+	def test_a_class_with_its_own_name_method_is_named_as_ruby_names_it
+		assert_equal 'Cannot generate a TestGenerate::OwnName. Only Hash, Array, String, Symbol, Integer, Float, true, false, nil, Time, and SOML::Duration can be generated', generate_error({'a' => OwnName.new}).reason
+		assert_equal 'Cannot generate an anonymous TestGenerate::OwnName. Only Hash, Array, String, Symbol, Integer, Float, true, false, nil, Time, and SOML::Duration can be generated', generate_error({'a' => Class.new(OwnName).new}).reason
+		hash = {}.compare_by_identity
+		hash[OwnName.new] = 1
+		assert_equal 'A key must be a String or a Symbol, not a TestGenerate::OwnName, because a key is never converted', generate_error(hash).reason
+		assert_equal 'A duration is a whole number of nanoseconds, got TestGenerate::OwnName', assert_raises(TypeError) { SOML::Duration.new(nanoseconds: OwnName.new) }.message
+		assert_equal 'no implicit conversion of TestGenerate::OwnName into String', assert_raises(TypeError) { SOML.parse(OwnName.new) }.message
+	end
+
+	# The message of a `GenerateError` is often printed to a terminal, so a character that a terminal acts on, such as the escape of a class name, is replaced, as in a `ParseError`.
+	def test_an_error_message_cannot_hold_a_terminal_escape
+		type = Class.new
+		type.set_temporary_name("\e[31mred\u202E")
+		error = generate_error({"\e" => {'b' => type.new}})
+		refute_match(/[\e\u202E]/, error.message)
+		assert_equal "Cannot generate a \uFFFD[31mred\uFFFD. Only Hash, Array, String, Symbol, Integer, Float, true, false, nil, Time, and SOML::Duration can be generated", error.reason
+		assert_equal "#{error.reason} (at \"\\u001b\".b)", error.message
+	end
+
+	# A `TypeError` names a value or a class from the caller too, and a string's `inspect` escapes a control character but not a bidirectional control.
+	def test_a_type_error_message_cannot_hold_a_terminal_escape
+		type = Class.new
+		type.set_temporary_name("\e[31mred\u202E")
+		messages = [
+			assert_raises(TypeError) { SOML.parse(type.new) }.message,
+			assert_raises(TypeError) { SOML::Duration.new(nanoseconds: 1) + type.new }.message,
+			assert_raises(TypeError) { SOML::Duration.new(nanoseconds: "\u202Eabc") }.message,
+			assert_raises(TypeError) { SOML::Duration.new(nanoseconds: :"\u202Ex") }.message
+		]
+		messages.each do |message|
+			refute_match(/[\e\u202E]/, message)
+		end
+		assert_equal "A duration is a whole number of nanoseconds, got \"\uFFFDabc\"", messages[2]
+	end
+
+	class OwnInspectTime < Time
+		def inspect = raise('not called')
+	end
+
+	def test_an_instant_error_shows_a_time_subclass_as_time_shows_it
+		time = OwnInspectTime.at(Rational(1, 3)).utc
+		assert_match(/\ACannot generate the instant 1970-01-01 00:00:00 1\/3 UTC, because it has a fraction/, generate_error({'a' => time}).reason)
+	end
+
+	# `raise error, 'Other'` copies the error, and the generator adds to the path of the error it rescues.
+	def test_a_copy_of_an_error_has_its_own_path
+		error = generate_error({'a' => [Float::NAN]})
+		copy = error.exception('Other')
+		copy.path << 9
+		assert_equal ['a', 0], error.path
+		assert_equal ['a', 0, 9], copy.path
+		assert_equal 'Other (at a[0][9])', copy.message
+	end
+
 	# A key too deep for `inspect` to show is still a `GenerateError`. An identity hash does not hash the key, which is deep too.
 	#
 	# Inside `edit`, rescuing the `SystemStackError` of `inspect` was not enough: the stack is deeper there, and the overflow crashed the process with SIGILL instead. So a key that can nest is never inspected.

@@ -177,6 +177,27 @@ class TestParse < Minitest::Test
 		assert_equal 123_456_789, time.nsec
 	end
 
+	# Each part is read from its place in the token, so every part at its smallest and largest value, and a fraction of every length, reads as `Time` reads it.
+	def test_every_part_of_an_instant_at_its_limits
+		{
+			'0001-01-01T00:00:00Z' => Time.utc(1, 1, 1),
+			'9999-12-31T23:59:59.999999999Z' => Time.utc(9999, 12, 31, 23, 59, Rational(59_999_999_999, 1_000_000_000)),
+			'2024-02-29T12:34:56+23:59' => Time.new(2024, 2, 29, 12, 34, 56, '+23:59'),
+			'2023-02-28T12:34:56-23:59' => Time.new(2023, 2, 28, 12, 34, 56, '-23:59'),
+			'2000-02-29T00:00:00+00:00' => Time.utc(2000, 2, 29),
+			'1000-10-10T10:10:10.5-10:10' => Time.new(1000, 10, 10, 10, 10, Rational(21, 2), '-10:10'),
+			'0001-01-01T00:00:00-00:01' => Time.utc(1, 1, 1, 0, 1),
+			'9999-12-31T23:59:59+00:01' => Time.utc(9999, 12, 31, 23, 58, 59)
+		}.each do |text, expected|
+			assert_equal expected.to_r, value_of("a: #{text}").to_r, text
+		end
+
+		(1..9).each do |length|
+			fraction = '123456789'[0, length]
+			assert_equal Rational(fraction.to_i, 10**length), value_of("a: 2026-09-19T14:00:00.#{fraction}Z").subsec, fraction
+		end
+	end
+
 	def test_instants_are_normalized_to_the_same_instant_regardless_of_offset
 		value = SOML.parse("a: 2026-09-19T14:00:00Z\nb: 2026-09-19T16:00:00+02:00")
 		assert_equal value['a'], value['b']

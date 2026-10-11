@@ -1155,6 +1155,25 @@ class TestErrors < Minitest::Test
 		end
 	end
 
+	# An octal or binary integer is checked as a whole too, without a regex that repeats over every digit.
+
+	[
+		['a: -0o7', 'An octal integer cannot have a sign, because it states a bit pattern rather than a quantity'],
+		['a: -0b1', 'A binary integer cannot have a sign, because it states a bit pattern rather than a quantity'],
+		['a: 0o', 'Expected octal digits after “0o”'],
+		['a: 0b', 'Expected binary digits after “0b”'],
+		['a: 0b1_', 'An underscore in a number must be between two digits'],
+		['a: 0o_7', 'An underscore in a number must be between two digits'],
+		['a: 0b1__1', 'An underscore in a number must be between two digits'],
+		["a: 0b#{'1' * 1100}2", 'Invalid binary digit “2”'],
+		["a: 0o#{'7' * 1100}_", 'An underscore in a number must be between two digits'],
+		["a: 0x#{'F' * 1100}G", 'Invalid hexadecimal digit “G”']
+	].each do |source, reason|
+		define_method("test_the_radix_reason_for #{source[0, 20].inspect} #{source.bytesize}") do
+			assert_equal reason, parse_error(source).reason
+		end
+	end
+
 	def test_every_uppercase_hexadecimal_suggestion_parses_to_the_value_the_lowercase_digits_mean
 		valid = %w[a f 0a a0 ab_cd a_b_c 7fffffffffffffff dead_beef]
 

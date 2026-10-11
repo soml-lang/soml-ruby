@@ -13,13 +13,20 @@ module SOML
 		private_constant :Removal, :Replacement
 
 		# @param source [String] The document.
-		# @param path [Array<String, Symbol, Integer>]
+		# @param path [Array<String, Symbol, Integer>, Tree::MemberNode, Tree::ObjectNode, Tree::ArrayNode, Tree::ScalarNode]
 		# @param value [Object] The new value, unless `delete` is true.
 		# @param delete [Boolean] Whether to remove the value instead.
 		def initialize(source, path, value, delete:)
+			case path
+			when Tree::MemberNode, Tree::ObjectNode, Tree::ArrayNode, Tree::ScalarNode
+				tree = Tree.new(source, lean: true)
+				path = node_path(tree.body, path)
+				raise ArgumentError, 'The node must be a member or a non-root value from the same source' unless path
+			end
+
 			# `Array#all?` on something else than an array, such as a hash, would read it in another way.
 			unless Array === path && !path.empty? && path.all? { |segment| (Integer === segment && !segment.negative?) || String === segment || Symbol === segment }
-				raise TypeError, 'The path must be a non-empty array of keys and array indexes'
+				raise TypeError, 'The path must be a non-empty array of keys and array indexes, or a member or value node from SOML.parse_tree'
 			end
 
 			# A key is checked as `generate` checks one, and read as the UTF-8 string it names, so that a symbol finds its string. A key of a removal is not written, so a carriage return in it is no error: it finds nothing.
@@ -38,7 +45,7 @@ module SOML
 			@value = value
 			@delete = delete
 
-			tree = Tree.new(source)
+			tree ||= Tree.new(source, lean: true)
 			@source = tree.source
 			# The same bytes, for the searches for a line break from an offset that may be inside a character, such as the last byte of a line that ends with `é`, which `String#byterindex` refuses in UTF-8.
 			@bytes = @source.b
@@ -52,7 +59,7 @@ module SOML
 			# The end of each comment, by its start, so that the trivia between tokens can be skipped.
 			@comment_ends = @comments.to_h { [it.start, it.finish] }
 			# The start of each block comment, by its end, so that the comments before a member or an item can be found.
-			@block_comment_starts = @comments.select { it.type == :block }.to_h { [it.finish, it.start] }
+			@block_comment_starts = @comments.filter_map { [it.finish, it.start] if it.type == :block }.to_h
 		end
 
 		# @return [String] The changed document.
@@ -82,6 +89,25 @@ module SOML
 		end
 
 		private
+
+		# Resolve a parsed node to the path that the editor follows, or `nil` when it is not a member or a non-root value of `body`. Matching complete nodes also rejects mismatched spans or values; callers must still use the same source. The search goes down through the one member or item whose span holds the node, so it reads one of them at each level.
+		def node_path(body, target)
+			path = []
+			container = body
+
+			while container.type == :object || container.type == :array
+				is_object = container.type == :object
+				items = is_object ? container.members : container.elements
+				index = items.bsearch_index { it.finish > target.start }
+				item = index && items[index]
+				return if item.nil? || item.start > target.start
+
+				path << (is_object ? item.key.value : index)
+				return path if item == target || (is_object && item.value == target)
+
+				container = is_object ? item.value : item
+			end
+		end
 
 		def edit_in_array(array, index, depth)
 			position = @path[index]
@@ -140,7 +166,7 @@ module SOML
 
 			return if @delete
 
-			written_key = SOML.bare_key?(key) ? key : Generator.new.generate_value(key, 0)
+			written_key = Generator.format_key(key)
 			new_value = nest(index + 1)
 			insert(object, object.members.last) { |indentation| "#{written_key}: #{value_text(new_value, index + 1, depth + 1, indentation, object)}" }
 		end
@@ -192,7 +218,7 @@ module SOML
 			# When the removed item is the last one and has no comma after it, it takes the comma before it, so that no trailing comma is left, as `[1, 2]` becomes `[1]`.
 			takes_comma_before = node.equal?(items.last) && @source.getbyte(skip_trivia(node.finish)) != 0x2C
 			removal = node_removal(node, takes_comma_before)
-			take_blank_line(removal, container, content_start(container)) if removal.is_whole_lines
+			take_blank_line(removal, container) if removal.is_whole_lines
 
 			if items.length == 1 && braced?(container) && !comment_left?(container, removal)
 				@replacements << Replacement.new(container.start + 1, container.finish - 1, '')
@@ -267,21 +293,22 @@ module SOML
 			Removal.new(is_last ? skip_spaces_back(start) : start, after, false)
 		end
 
-		# Widens a removal of whole lines by a blank line that would otherwise be left next to another blank line, or directly inside a bracket. `content_start` is the container's, from `content_start`.
-		def take_blank_line(removal, container, content_start)
+		# Widens a removal of whole lines by a blank line that would otherwise be left next to another blank line, or directly inside a bracket.
+		def take_blank_line(removal, container)
 			is_blank_before = removal.start.positive? && blank_line?(line_start(removal.start - 1))
 			is_blank_after = removal.finish < @length && blank_line?(removal.finish)
 
 			if is_blank_before && (is_blank_after || at_closing?(removal.finish, container))
 				removal.start = line_start(removal.start - 1)
-			elsif is_blank_after && removal.start == content_start
-				removal.finish = @bytes.byteindex("\n", removal.finish) + 1
+			elsif is_blank_after && removal.start == content_start(container)
+				# The line is blank, so its line break follows its spaces.
+				removal.finish = skip_spaces(removal.finish) + 1
 			end
 		end
 
 		# The offset after the blank lines that start at `offset`.
 		def skip_blank_lines(offset)
-			offset = @bytes.byteindex("\n", offset) + 1 while offset < @length && blank_line?(offset)
+			offset = skip_spaces(offset) + 1 while blank_line?(offset)
 			offset
 		end
 
@@ -299,9 +326,7 @@ module SOML
 			line_end && skip_blank_lines(line_end + 1)
 		end
 
-		def blank_line?(line_start)
-			@source.getbyte(skip_spaces(line_start)) == 0x0A
-		end
+		def blank_line?(line_start) = @source.getbyte(skip_spaces(line_start)) == 0x0A
 
 		def line_start(offset)
 			return 0 if offset.zero?
@@ -435,13 +460,9 @@ module SOML
 			offset
 		end
 
-		def space?(byte)
-			byte == 0x20 || byte == 0x09
-		end
+		def space?(byte) = byte == 0x20 || byte == 0x09
 
-		def braced?(container)
-			container.type == :array || container.braced
-		end
+		def braced?(container) = container.type == :array || container.braced
 
 		# `@value` inside new objects for the keys of the path from `index` on. An index there names an item of an array that does not exist yet, so it raises an `IndexError`.
 		def nest(index)
@@ -461,8 +482,6 @@ module SOML
 		def describe_path(path) = Parser.describe_path(path)
 
 		# The value that holds `@path[index]`.
-		def describe_parent(index)
-			index.zero? ? 'the document' : describe_path(@path.first(index))
-		end
+		def describe_parent(index) = index.zero? ? 'the document' : describe_path(@path.first(index))
 	end
 end

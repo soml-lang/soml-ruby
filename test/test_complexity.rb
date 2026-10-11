@@ -143,6 +143,22 @@ class TestComplexity < Minitest::Test
 		assert_linear('format: a long run of spaces and commas', ->(size) { "[1#{' ' * size},#{"\t" * size}2]" }) { SOML.format(it) }
 	end
 
+	# A linter asks for the position of every node, and an autofix edits through a node.
+	def test_parse_tree
+		TREE_SHAPES.each do |name, (build, _)|
+			assert_linear("parse_tree: #{name}", build) { SOML.parse_tree(it) }
+		end
+
+		positions = ->(size) { SOML.parse_tree((0...(size / 16)).map { "k#{it}: 'é' # note" }.join("\n")) }
+		assert_linear('the position of every node', positions) { |tree| tree.each_node { tree.position(it.start) } }
+
+		one_line = ->(size) { SOML.parse_tree("a: [#{(["'é'"] * (size / 16)).join(', ')}]") }
+		assert_linear('the position of every node on one long non-ASCII line', one_line) { |tree| tree.each_node { tree.position(it.start) } }
+
+		nested = ->(size) { "[#{"[#{'1, ' * 10}{a: [1, 2]}],\n" * (size / 32)}]" }
+		assert_linear('edit through the last node', nested) { SOML.edit(it, SOML.parse_tree(it).body.elements.last.elements.last.members.first.value.elements.last, 3) }
+	end
+
 	def test_edit
 		TREE_SHAPES.each do |name, (build, path)|
 			assert_linear("edit: #{name}", build) { SOML.edit(it, path, 1) }

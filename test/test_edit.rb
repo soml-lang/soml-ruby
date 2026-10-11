@@ -68,8 +68,8 @@ class TestEdit < Minitest::Test
 
 	def test_the_path_is_checked
 		[[], 'a', nil, {'a' => 1}, [-1], [1.5], [nil], [Object.new], ['b', nil, 'c'], [true]].each do |path|
-			assert_edit_error(TypeError, 'The path must be a non-empty array of keys and array indexes', 'a: 1', path, 1)
-			assert_edit_error(TypeError, 'The path must be a non-empty array of keys and array indexes', 'a: 1', path, delete: true)
+			assert_edit_error(TypeError, 'The path must be a non-empty array of keys and array indexes, or a member or value node from SOML.parse_tree', 'a: 1', path, 1)
+			assert_edit_error(TypeError, 'The path must be a non-empty array of keys and array indexes, or a member or value node from SOML.parse_tree', 'a: 1', path, delete: true)
 		end
 	end
 
@@ -251,8 +251,8 @@ class TestEdit < Minitest::Test
 			[IndexError, 'Cannot edit b[0].c[1], because b[0].c does not exist, so it has no index 1', "b: [{}]\n", ['b', 0, 'c', 1]],
 			[IndexError, 'Cannot edit b[0][1], because b[0] does not exist, so it has no index 1', "b: []\n", ['b', 0, 1]],
 			[IndexError, 'Cannot edit b[0], because b does not exist, so it has no index 0', "a: 1\n", ['b', 0]],
-			[TypeError, 'The path must be a non-empty array of keys and array indexes', "a: 1\n", []],
-			[TypeError, 'The path must be a non-empty array of keys and array indexes', "a: 1\n", ['a', -1]]
+			[TypeError, 'The path must be a non-empty array of keys and array indexes, or a member or value node from SOML.parse_tree', "a: 1\n", []],
+			[TypeError, 'The path must be a non-empty array of keys and array indexes, or a member or value node from SOML.parse_tree', "a: 1\n", ['a', -1]]
 		].each do |error_class, message, text, path|
 			assert_edit_error(error_class, message, text, path, 1)
 		end

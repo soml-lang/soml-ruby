@@ -5,6 +5,11 @@ module SOML
 	#
 	# @api private
 	class Printer
+		# The brackets of a container, by its type, so that writing one allocates no array for them.
+		BRACKETS = Ractor.make_shareable({object: ['{', '}'], array: ['[', ']']})
+
+		private_constant :BRACKETS
+
 		# @param tree [Tree]
 		def initialize(tree)
 			@source = tree.source
@@ -27,6 +32,7 @@ module SOML
 
 		# Starts a new line at `level`, with one blank line before it when the source had one.
 		def new_line(level, is_blank)
+			# The first line of the file has no line break before it.
 			return if @output.empty?
 
 			@output << (is_blank ? "\n\n" : "\n") << INDENTS[level]
@@ -100,6 +106,7 @@ module SOML
 
 			# Between two items there is only whitespace, comments, and at most one comma.
 			while index < finish
+				# A comma inside a comment is not one. Each jump lands on the line feed after a line comment, or on the `/` of a block comment's end, and the loop steps past it.
 				case source.getbyte(index)
 				when 0x2C # ,
 					return index
@@ -123,11 +130,12 @@ module SOML
 			item_end = nil
 			# Whether a comment may stay at the end of the line before it, which needs an item or an opening bracket there.
 			can_trail = is_bracketed
+			# Whether the list has written something other than a comment at the end of the opening bracket's line. A blank line is kept only after that, so none is left directly inside the bracket or at the start of the file.
 			has_written = false
 			is_on_same_line = false
 
 			# One more round than there are items, for the comments after the last one.
-			(0..items.length).each do |index|
+			0.upto(items.length) do |index|
 				item = items[index]
 				item_start = item ? item.start : finish
 				comma = is_bracketed ? find_comma(previous_end, item_start) : nil
@@ -176,7 +184,7 @@ module SOML
 			previous_end = start + 1
 			has_written_token = false
 
-			(0..items.length).each do |index|
+			0.upto(items.length) do |index|
 				item = items[index]
 				item_start = item ? item.start : finish - 1
 				# The comma after the last item is left out.
@@ -290,8 +298,10 @@ module SOML
 				return
 			end
 
-			opening, closing, items = node.type == :object ? ['{', '}', node.members] : ['[', ']', node.elements]
+			opening, closing = BRACKETS[node.type]
+			items = node.type == :object ? node.members : node.elements
 
+			# Every comment before the container is already written, so a next comment that ends by `finish` is inside it. A container that holds only comments is not empty.
 			if items.empty? && peek_comment(finish).nil?
 				@output << opening << closing
 				return
@@ -323,7 +333,7 @@ module SOML
 			old_length = 0
 			old_length += 1 while (byte = closing.getbyte(old_length)) == 0x20 || byte == 0x09
 
-			lines.each_with_index.map do |line, index|
+			lines.map.with_index do |line, index|
 				index.zero? || !line.match?(NOT_BLANK_CHARACTER) ? line : indentation + line.byteslice(old_length, line.bytesize - old_length)
 			end.join("\n")
 		end

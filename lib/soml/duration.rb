@@ -29,9 +29,7 @@ module SOML
 		# @return [Duration]
 		# @raise [ParseError] When `text` is not a valid duration.
 		# @raise [TypeError] When `text` is not a string.
-		def self.parse(text)
-			Parser.new(text).parse_duration_literal
-		end
+		def self.parse(text) = Parser.new(text).parse_duration_literal
 
 		# Make a duration from a number of seconds, the inverse of {#to_r}. The seconds are rounded to the nearest nanosecond, because a `Float` such as `0.1` is not exact.
 		#
@@ -80,15 +78,11 @@ module SOML
 
 		# @return [Duration] The same length in the other direction.
 		# @raise [RangeError] For the most negative duration, whose opposite is outside the 64-bit range.
-		def -@
-			Duration.new(nanoseconds: -nanoseconds)
-		end
+		def -@ = Duration.new(nanoseconds: -nanoseconds)
 
 		# @return [Duration]
 		# @raise [RangeError] For the most negative duration, whose length is outside the 64-bit range.
-		def abs
-			negative? ? -self : self
-		end
+		def abs = negative? ? -self : self
 
 		# A number has no unit, so only a duration can be added.
 		#
@@ -100,27 +94,19 @@ module SOML
 		# @example
 		#   SOML::Duration.parse('1h') + SOML::Duration.parse('30m')
 		#   #=> #<SOML::Duration 1h30m>
-		def +(other)
-			Duration.new(nanoseconds: nanoseconds + nanoseconds_of(other))
-		end
+		def +(other) = Duration.new(nanoseconds: nanoseconds + nanoseconds_of(other))
 
 		# @param other [Duration]
 		# @return [Duration]
 		# @raise [TypeError] When `other` is not a duration.
 		# @raise [RangeError] When the difference is outside the 64-bit range.
-		def -(other)
-			Duration.new(nanoseconds: nanoseconds - nanoseconds_of(other))
-		end
+		def -(other) = Duration.new(nanoseconds: nanoseconds - nanoseconds_of(other))
 
 		# @return [Rational] The length in seconds, exactly.
-		def to_r
-			Rational(nanoseconds, 1_000_000_000)
-		end
+		def to_r = Rational(nanoseconds, 1_000_000_000)
 
 		# @return [Float] The length in seconds, for `sleep` and `Timeout.timeout`.
-		def to_f
-			nanoseconds.fdiv(1_000_000_000)
-		end
+		def to_f = nanoseconds.fdiv(1_000_000_000)
 
 		# @return [String] The canonical spelling, such as `1h30m`, `1.5s`, or `0s`.
 		def to_s
@@ -128,32 +114,24 @@ module SOML
 			return +'0s' if nanoseconds.zero?
 
 			magnitude = nanoseconds.abs
-			hours, rest = magnitude.divmod(3_600_000_000_000)
-			minutes, rest = rest.divmod(60_000_000_000)
-			seconds, fraction = rest.divmod(1_000_000_000)
+			hours, rest = magnitude.divmod(DURATION_UNITS['h'])
+			minutes, rest = rest.divmod(DURATION_UNITS['m'])
+			seconds, fraction = rest.divmod(DURATION_UNITS['s'])
 			text = nanoseconds.negative? ? +'-' : +''
 			text << "#{hours}h" if hours.positive?
 			text << "#{minutes}m" if minutes.positive?
 
-			if seconds.positive? || fraction.positive?
-				text << seconds.to_s
-				# The fraction is written like an instant's: nine digits with the trailing zeros removed.
-				text << ".#{format('%09d', fraction).sub(/0+\z/, '')}" if fraction.positive?
-				text << 's'
-			end
+			# The fraction is written like an instant's: nine digits with the trailing zeros removed.
+			text << "#{seconds}#{Generator.format_fraction(fraction)}s" if seconds.positive? || fraction.positive?
 
 			text
 		end
 
 		# @return [String]
-		def inspect
-			"#<SOML::Duration #{self}>"
-		end
+		def inspect = "#<SOML::Duration #{self}>"
 
 		# @api private
-		def pretty_print(printer)
-			printer.text(inspect)
-		end
+		def pretty_print(printer) = printer.text(inspect)
 
 		private
 

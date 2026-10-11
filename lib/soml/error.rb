@@ -2,7 +2,19 @@
 
 module SOML
 	# The base class of the errors this library raises.
-	class Error < StandardError; end
+	class Error < StandardError
+		# Characters that a terminal acts on rather than shows: control characters other than tab, and bidirectional controls. They are replaced in an error message, so that printing it cannot run a terminal escape or reorder the text.
+		UNPRINTABLE = /[\p{Bidi_Control}[\p{Cc}&&[^\t]]]/
+
+		private_constant :UNPRINTABLE
+
+		# `text` with the characters that a terminal acts on replaced, for every message that can show a value or a name from the caller.
+		#
+		# @api private
+		# @param text [String]
+		# @return [String]
+		def self.sanitize(text) = text.gsub(UNPRINTABLE, "\uFFFD")
+	end
 
 	# Raised by {SOML.parse}, {SOML.load_file}, and {SOML::Duration.parse} when the input is not valid.
 	#
@@ -21,10 +33,7 @@ module SOML
 		CONTEXT_LINES = 2
 		MAX_LINE_WIDTH = 100
 
-		# Characters that a terminal acts on rather than shows: control characters other than tab, and bidirectional controls. They are replaced in an error message, so that printing it cannot run a terminal escape or reorder the text.
-		UNPRINTABLE = /[\p{Bidi_Control}[\p{Cc}&&[^\t]]]/
-
-		private_constant :CONTEXT_LINES, :MAX_LINE_WIDTH, :UNPRINTABLE
+		private_constant :CONTEXT_LINES, :MAX_LINE_WIDTH
 
 		# @return [String] What is wrong, without the position.
 		attr_reader :reason
@@ -47,7 +56,7 @@ module SOML
 		# @param byte_offset [Integer] Where the error is in `source`, in bytes.
 		# @param path [String, nil] The file the source is from.
 		def initialize(reason, source, byte_offset, path = nil)
-			@reason = sanitize(reason)
+			@reason = Error.sanitize(reason)
 
 			# A copy, which shares the bytes, so that a caller that changes its string afterwards does not change the code frame.
 			@source = source.dup
@@ -75,9 +84,7 @@ module SOML
 		# The message and the code frame, which Ruby shows for an uncaught error.
 		#
 		# @return [String]
-		def detailed_message(highlight: false, **)
-			"#{super}\n\n#{code_frame}"
-		end
+		def detailed_message(highlight: false, **) = "#{super}\n\n#{code_frame}"
 
 		private
 
@@ -95,11 +102,10 @@ module SOML
 			gutter_width = @line.to_s.length
 			output = []
 
-			line_starts.each_with_index do |line_start, index|
-				number = first_line + index
+			line_starts.each.with_index(first_line) do |line_start, number|
 				is_error_line = number == @line
 				line_end = @source.index("\n", line_start) || @source.length
-				text, pointer = clip(sanitize(@source[line_start...line_end]), is_error_line ? @offset - line_start : 0)
+				text, pointer = clip(Error.sanitize(@source[line_start...line_end]), is_error_line ? @offset - line_start : 0)
 				gutter = "#{is_error_line ? '>' : ' '} #{number.to_s.rjust(gutter_width)} |"
 				output << (text.empty? ? gutter : "#{gutter} #{text}")
 
@@ -124,13 +130,9 @@ module SOML
 			["#{prefix}#{text[start...finish]}#{suffix}", pointer - start + prefix.length]
 		end
 
-		def sanitize(text)
-			text.gsub(UNPRINTABLE, "\uFFFD")
-		end
-
 		# The path in UTF-8, so that it joins the reason, with what is not printable replaced, as in the reason.
 		def show_path(path)
-			sanitize(Parser.lossy_utf8(path))
+			Error.sanitize(Parser.lossy_utf8(path))
 		end
 	end
 
@@ -158,7 +160,15 @@ module SOML
 		# @api private
 		def initialize(reason)
 			@path = []
+
+			# The reason may name a class or show a value, as in `Cannot generate a Foo`, which can hold anything, so it is sanitized as the reason of a `ParseError` is.
+			super(Error.sanitize(reason))
+		end
+
+		# A copy, as made by `raise error, 'Other'`, has its own path, so that adding to the path of one does not change the other.
+		def initialize_copy(other)
 			super
+			@path = @path.dup
 		end
 
 		# @return [String] The reason, and the path to the value when it is not the top-level value.

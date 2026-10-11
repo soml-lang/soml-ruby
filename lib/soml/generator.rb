@@ -22,6 +22,18 @@ module SOML
 
 		private_constant :NEEDS_ESCAPED_BYTE, :ESCAPED_CHARACTER, :ESCAPES
 
+		# A key as a document writes it, bare when it can be, for {Parser} to suggest a key and for {Editor} to write a new member.
+		#
+		# @param key [String] A key that {#member_name} checked.
+		# @return [String]
+		def self.format_key(key) = SOML.bare_key?(key) ? key : new.generate_value(key, 0)
+
+		# The fraction of a second of an instant or a duration as a document writes it: a point and nine digits with the trailing zeros removed, or nothing when there is none.
+		#
+		# @param nanoseconds [Integer] The fraction, below one second.
+		# @return [String]
+		def self.format_fraction(nanoseconds) = nanoseconds.zero? ? '' : ".#{nanoseconds.to_s.rjust(9, '0').rstrip('0')}"
+
 		# @param canonical [Boolean] Whether members are sorted by key, as in canonical form, rather than kept in the order of their hash.
 		# @param one_line [Boolean] Whether a container is written on one line, as in `[1, {a: 2}]`, for {Editor} to write a value inside a container that is on one line.
 		def initialize(canonical: false, one_line: false)
@@ -130,7 +142,7 @@ module SOML
 			enter(value, depth)
 			inner_indent = INDENTS[indent.length + 1]
 
-			if value.is_a?(Array)
+			if Array === value
 				write_array(value, depth, indent, inner_indent)
 			else
 				write_hash(value, depth, indent, inner_indent)
@@ -216,29 +228,28 @@ module SOML
 		# Sorts the keys by their UTF-8 names. UTF-8 byte order is code point order, which is the canonical order.
 		def sort_keys!(keys)
 			# The common cases, all keys strings or all symbols in UTF-8 or US-ASCII, sort the keys themselves, because then their byte order is the order of their UTF-8 names. A string from `Symbol#to_s` is in US-ASCII. Anything else, such as a symbol in ISO-8859-1, sorts the keys by their UTF-8 names.
-			if keys.all? { |key| String === key && utf8_compatible?(key) } || keys.all? { |key| Symbol === key && utf8_compatible?(key) }
+			if keys.all? { String === it && utf8_compatible?(it) } || keys.all? { Symbol === it && utf8_compatible?(it) }
 				keys.sort!
 			else
-				keys.replace(keys.map { |key| [member_name(key), key] }.sort_by!(&:first).map!(&:last))
+				keys.sort_by! { member_name(it) }
 			end
 		end
 
-		def utf8_compatible?(key)
-			key.encoding == Encoding::UTF_8 || key.encoding == Encoding::US_ASCII
-		end
+		def utf8_compatible?(key) = key.encoding == Encoding::UTF_8 || key.encoding == Encoding::US_ASCII
 
 		# A key that `member_name` checked, so it is valid UTF-8 without a carriage return.
 		def write_key(key)
 			if SOML.bare_key?(key)
 				@buffer << key
 			else
-				write_string(key)
+				write_quoted(key)
 			end
 		end
 
-		def write_string(string)
-			string = to_utf8(string, 'string')
+		def write_string(string) = write_quoted(to_utf8(string, 'string'))
 
+		# Writes a valid UTF-8 string between quotes, as a `'...'` string when it can be one.
+		def write_quoted(string)
 			# One scan settles the common case: no quote and no control character.
 			index = 0
 			length = string.bytesize
@@ -291,7 +302,7 @@ module SOML
 
 			mantissa, exponent = text.delete_prefix('-').split('e')
 			whole, fraction = mantissa.split('.')
-			digits = "#{whole}#{fraction}".sub(/0+\z/, '')
+			digits = "#{whole}#{fraction}".rstrip('0')
 			length = digits.length
 
 			# The decimal point is after `point` digits, so the value is 0.digits × 10^point.
@@ -312,30 +323,29 @@ module SOML
 		end
 
 		def format_instant(time)
-			utc = time.getutc
+			# `getutc` makes a copy, which a time in UTC, as `SOML.parse` returns it, does not need.
+			utc = time.utc? ? time : time.getutc
 			nanoseconds = utc.nsec
 
-			# A time made from a float, such as `Time.at(Time.now.to_f)`, has the float's binary fraction.
-			raise GenerateError, "Cannot generate the instant #{time.inspect}, because it has a fraction of a second finer than a nanosecond. Round it to nanoseconds with time.round(9)" unless utc.subsec * 1_000_000_000 == nanoseconds
-			raise GenerateError, "Cannot generate the instant #{time.inspect}, because in UTC it falls outside the years 0001 to 9999" unless utc.year.between?(1, 9999)
+			# A time made from a float, such as `Time.at(Time.now.to_f)`, has the float's binary fraction. A subclass of `Time` may define its own `inspect`.
+			raise GenerateError, "Cannot generate the instant #{Time.instance_method(:inspect).bind_call(time)}, because it has a fraction of a second finer than a nanosecond. Round it to nanoseconds with time.round(9)" unless (1_000_000_000 % utc.subsec.denominator).zero?
+			raise GenerateError, "Cannot generate the instant #{Time.instance_method(:inspect).bind_call(time)}, because in UTC it falls outside the years 0001 to 9999" unless utc.year.between?(1, 9999)
 
-			text = format('%04d-%02d-%02dT%02d:%02d:%02d', utc.year, utc.month, utc.day, utc.hour, utc.min, utc.sec)
-
-			# The fraction is nine digits with the trailing zeros removed.
-			text << ".#{format('%09d', nanoseconds).sub(/0+\z/, '')}" if nanoseconds.positive?
-			text << 'Z'
+			# The year is 0001 to 9999, so `xmlschema` writes four digits, and a time in UTC ends with `Z`.
+			text = utc.xmlschema
+			nanoseconds.zero? ? text : "#{text.chop}#{Generator.format_fraction(nanoseconds)}Z"
 		end
 
-		# The class is read with `Kernel#class`, which a `BasicObject` does not have. An anonymous class, such as one from `Data.define`, is named by its nearest named superclass.
+		# An anonymous class, such as one from `Data.define`, is named by its nearest named superclass.
 		def describe(value)
 			case value
 			when nil, true, false
 				value.inspect
 			else
-				type = Kernel.instance_method(:class).bind_call(value)
+				type = Parser.class_of(value)
 				named = type
-				named = named.superclass until named.name
-				name = Parser.lossy_utf8(named.equal?(type) ? type.name : "anonymous #{named.name}")
+				named = named.superclass until (name = Parser.module_name(named))
+				name = Parser.lossy_utf8(named.equal?(type) ? name : "anonymous #{name}")
 				"#{name.match?(/\A[AEIOUaeiou]/) ? 'an' : 'a'} #{name}"
 			end
 		end
