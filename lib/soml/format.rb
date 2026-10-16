@@ -321,6 +321,8 @@ module SOML
 		# Only spaces and tabs are whitespace in SOML. Any other character, such as a no-break space, is content.
 		def trim_trailing_whitespace(text)
 			# A loop rather than a regex, which would keep a backtracking entry for every space of a long run.
+			#
+			# Note: Not using `rstrip(" \t")` because it is slower for typical short lines.
 			finish = text.bytesize
 			finish -= 1 while finish.positive? && ((byte = text.getbyte(finish - 1)) == 0x20 || byte == 0x09)
 			text.byteslice(0, finish)
@@ -330,6 +332,7 @@ module SOML
 		def reindent_block_string(text, indentation)
 			lines = text.split("\n", -1)
 			closing = lines.last
+			# Note: Not using `lstrip(" \t")` because it allocates a string and is slower than this scan.
 			old_length = 0
 			old_length += 1 while (byte = closing.getbyte(old_length)) == 0x20 || byte == 0x09
 

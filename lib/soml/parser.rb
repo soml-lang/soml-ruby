@@ -175,6 +175,8 @@ module SOML
 		end
 
 		# The length of `text` in UTF-16 code units, as JS counts it. A character outside the BMP is two code units, and its UTF-8 lead byte is 0xF0 to 0xF4. `String#count` with that range of characters instead would build a table of a million entries.
+		#
+		# Note: Not using UTF-16 encoding because it copies the text and is slower for short messages.
 		def self.utf16_length(text) = text.length + text.b.count("\xF0-\xF4".b)
 
 		# The string as `JSON.stringify` writes it, as the JS reference shows a quoted key, so that a control character, such as a line feed, shows as its escape.
@@ -1316,6 +1318,9 @@ module SOML
 		end
 
 		# The float nearest to `significand × 10^exponent`, rounding a tie to even, as IEEE 754 does. It uses exact integer arithmetic rather than `String#to_f`, which warns when a value overflows or underflows.
+		#
+		# Note: Not using `Float()` because it warns at the limits.
+		# Note: Not using `Rational#to_f` because it can round twice (Ruby bug #22246).
 		def decimal_to_float(significand, exponent)
 			numerator = exponent.negative? ? significand : significand * (10**exponent)
 			denominator = exponent.negative? ? 10**-exponent : 1
@@ -1390,6 +1395,8 @@ module SOML
 		end
 
 		# The value of the `count` decimal digits at `offset` in `text`, which the caller checked are digits.
+		#
+		# Note: Not using a slice and `to_i` because they are slower for these small fields.
 		def digits_value(text, offset, count)
 			value = 0
 			finish = offset + count
@@ -1464,6 +1471,7 @@ module SOML
 			unless fraction.empty?
 				scale = 10**fraction.bytesize
 				fraction_nanoseconds = fraction.to_i * size
+				# Note: Not using `divmod` because it allocates an array and is slower for ordinary short fractions.
 				fail_duration(text, start, 'it is not a whole number of nanoseconds') unless (fraction_nanoseconds % scale).zero?
 				total += fraction_nanoseconds / scale
 			end
@@ -1565,10 +1573,12 @@ module SOML
 
 		def digit_or_underscore?(byte) = byte == 0x5F || digit?(byte)
 
-		def words_with_spaces?(text) = text.each_byte.all? { space?(it) || BARE_KEY_BYTE[it] }
+		# Note: Not using `String#count` because it scans the whole input even when its first character is invalid.
+		def words_with_spaces?(text) = !text.match?(/[^A-Za-z0-9_ \t-]/)
 
 		def days_in_month(year, month)
 			if month == 2
+				# Note: Not using `Date.gregorian_leap?` because it is slower and would require loading `date`.
 				is_leap_year = (year % 4).zero? && (!(year % 100).zero? || (year % 400).zero?)
 				return is_leap_year ? 29 : 28
 			end
@@ -1577,6 +1587,8 @@ module SOML
 		end
 
 		# Days since 1970-01-01 in the proleptic Gregorian calendar, from Howard Hinnant's `days_from_civil`.
+		#
+		# Note: Not using `Time.utc` because constructing it here is slower.
 		def days_from_civil(year, month, day)
 			year -= 1 if month <= 2
 			era = year.div(400)

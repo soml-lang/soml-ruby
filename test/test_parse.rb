@@ -420,6 +420,12 @@ class TestParse < Minitest::Test
 		assert_same_value 2.225073858507201e-308, value_of('a: 2.2250738585072011e-308')
 	end
 
+	# Note: Not using `Rational#to_f` because it rounds this numerator before dividing, which changes the nearest float (Ruby bug #22246).
+	def test_a_decimal_float_is_rounded_once
+		assert_same_value 65803600.513127826, value_of('a: 65803600.513127829623')
+		assert_same_value 65803600.513127826, value_of('a: 65803600513127829623e-12')
+	end
+
 	def test_the_largest_finite_float_and_the_first_one_past_it
 		assert_same_value Float::MAX, value_of('a: 1.7976931348623157e308')
 		assert_same_value Float::MAX, value_of('a: 1.7976931348623158e308')

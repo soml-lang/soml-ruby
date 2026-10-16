@@ -581,6 +581,14 @@ class TestErrors < Minitest::Test
 		assert_operator Process.clock_gettime(Process::CLOCK_PROCESS_CPUTIME_ID) - start, :<, 0.5
 	end
 
+	def test_the_key_with_spaces_hint_only_quotes_bare_words
+		assert_equal "A bare key cannot contain spaces. Quote it, as in 'a-Z_09 b-_'", parse_error('a-Z_09 b-_: 1').reason
+
+		["a b é: 1", "a b\u00A0: 1", 'a b. c: 1'].each do |source|
+			assert_equal 'Expected “:” after the key, but found “b”', parse_error(source).reason
+		end
+	end
+
 	# Only spaces and tabs are trimmed from the key before its colon, because other Unicode whitespace is not whitespace in SOML, and quoting the key without it would drop a character the author wrote.
 	def test_a_key_with_spaces_and_unicode_whitespace_before_its_colon
 		["\u3000", "\u2028", "\u2029", "\uFEFF", "\u00A0", "\u2000", "\u205F"].each do |whitespace|

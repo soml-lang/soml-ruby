@@ -166,6 +166,7 @@ module SOML
 		# The number of characters that start in the `length` bytes from `start`: the bytes that are not UTF-8 continuation bytes. The bytes may begin or end inside a character.
 		def character_count(start, length)
 			bytes = @source.byteslice(start, length).b
+			# Note: Not using a complement count because it offers no measured speedup.
 			bytes.bytesize - bytes.count("\x80-\xBF".b)
 		end
 

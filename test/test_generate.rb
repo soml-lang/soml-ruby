@@ -262,6 +262,22 @@ class TestGenerate < Minitest::Test
 		assert_equal "a: '#{text}'\n", SOML.generate({'a' => text})
 	end
 
+	def test_quote_selection_and_utf8_output_across_input_encodings
+		(0..0x7F).each do |code|
+			next if code == 0x0D
+
+			text = "é#{code.chr}😀"
+			quote = code < 0x20 || code == 0x27 || code == 0x7F ? '"' : "'"
+
+			[text, text.b, text.dup.force_encoding(Encoding::US_ASCII), text.encode(Encoding::UTF_16LE)].each do |input|
+				output = SOML.generate([input.freeze, 'after'])
+				assert_equal quote, output.lines[1][1], code.to_s
+				assert_equal Encoding::UTF_8, output.encoding
+				assert_same_value [text, 'after'], SOML.parse(output)
+			end
+		end
+	end
+
 	# A lone surrogate cannot be in a valid UTF-8 string, so the JS lone surrogate checks are invalid UTF-8 here.
 	def test_a_string_that_is_not_valid_utf8_is_refused
 		["\xED\xA0\x80", "\xED\xBF\xBF", "a\xED\xA0\xBD", "\xFF", "a\xC3", "\xC3".b].each do |text|

@@ -59,6 +59,8 @@ module SOML
 		key = key.encode(Encoding::UTF_8) unless key.encoding.ascii_compatible?
 
 		# A scan of the bytes, which is faster than the regex it replaces and decides the same: a byte that is not an ASCII letter, digit, `_`, or `-` means the key needs quotes. A non-ASCII character is a run of bytes none of which a bare key can hold.
+		#
+		# Note: Not using `String#count` because it is slower for typical short keys.
 		return false if key.empty?
 
 		index = 0

@@ -6,6 +6,8 @@ module SOML
 	# @api private
 	class Generator
 		# A byte that cannot be in a `'...'` string: a control character, an apostrophe, or DEL. A string with one is written as `"..."`. The set is a byte table, because a scan of it is faster than the regex it replaces.
+		#
+		# Note: Not using `String#count` because it is slower for typical short strings.
 		NEEDS_ESCAPED_BYTE = Array.new(256) { |byte| byte < 0x20 || byte == 0x27 || byte == 0x7F }.freeze
 
 		ESCAPED_CHARACTER = /[\x00-\x1F"\\\x7F]/
@@ -29,6 +31,8 @@ module SOML
 		def self.format_key(key) = SOML.bare_key?(key) ? key : new.generate_value(key, 0)
 
 		# The fraction of a second of an instant or a duration as a document writes it: a point and nine digits with the trailing zeros removed, or nothing when there is none.
+		#
+		# Note: Not using `sprintf` because its padding is slower than `to_s.rjust`.
 		#
 		# @param nanoseconds [Integer] The fraction, below one second.
 		# @return [String]
@@ -157,6 +161,7 @@ module SOML
 			@buffer << '[' << @line_break
 			index = 0
 
+			# Note: Not using `each_index` because its block overhead slows this hot loop under YJIT.
 			while index < array.length
 				@buffer << item_prefix(index, inner_indent)
 
@@ -210,6 +215,7 @@ module SOML
 
 		# Yields each member with its key as a UTF-8 string, in the order of the hash, or sorted by key for canonical form.
 		def each_member(hash)
+			# Note: Not using a `hash.each_key` enumerator because it is slower than iterating the key array.
 			keys = hash.keys
 			sort_keys!(keys) if @canonical
 			names = {}
@@ -259,6 +265,7 @@ module SOML
 			end
 
 			if index == length
+				# Note: Not using `append_as_bytes` because it is slower for typical short strings in the full generator.
 				@buffer << "'" << string << "'"
 				return
 			end
@@ -332,6 +339,8 @@ module SOML
 			raise GenerateError, "Cannot generate the instant #{Time.instance_method(:inspect).bind_call(time)}, because in UTC it falls outside the years 0001 to 9999" unless utc.year.between?(1, 9999)
 
 			# The year is 0001 to 9999, so `xmlschema` writes four digits, and a time in UTC ends with `Z`.
+			#
+			# Note: Not using `strftime` because Ruby 4's core `xmlschema` is faster.
 			text = utc.xmlschema
 			nanoseconds.zero? ? text : "#{text.chop}#{Generator.format_fraction(nanoseconds)}Z"
 		end

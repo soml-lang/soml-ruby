@@ -511,16 +511,16 @@ SOML.generate({timeout: SOML::Duration.from_seconds(5.minutes.to_r)})
 
 ## Benchmark
 
-CPU time to read and write the shared [benchmark fixtures](https://github.com/soml-lang/soml/blob/main/benchmark/readme.md), which hold the same data in SOML, JSON, and TOML, on an Apple M-series machine with Ruby 4.0 and YJIT. The numbers are rough. Lower is better.
+CPU time to read and write the shared [benchmark fixtures](https://github.com/soml-lang/soml/blob/main/benchmark/readme.md), which hold the same data in SOML, JSON, and TOML, on an Apple M-series machine with Ruby 4.0.6 and YJIT. The numbers are rough. Lower is better.
 
 | | this gem | `toml-rb` | `json` | `oj` |
 |---|---|---|---|---|
-| Read `service` (3 KB) | 78 µs | 174 µs | 10 µs | 11 µs |
-| Read `platform` (35 KB) | 0.61 ms | 1.2 ms | 0.10 ms | 0.07 ms |
-| Read `earthquakes` (733 KB) | 14 ms | 51 ms | 2.2 ms | 2.8 ms |
-| Write `service` | 51 µs | 105 µs | 8 µs | 8 µs |
-| Write `platform` | 0.34 ms | 0.65 ms | 0.06 ms | 0.03 ms |
-| Write `earthquakes` | 15 ms | 26 ms | 2.1 ms | 3.2 ms |
+| Read `service` (3 KB) | 59 µs | 152 µs | 9 µs | 10 µs |
+| Read `platform` (35 KB) | 0.54 ms | 1.3 ms | 0.09 ms | 0.07 ms |
+| Read `earthquakes` (733 KB) | 11 ms | 43 ms | 2.0 ms | 2.5 ms |
+| Write `service` | 46 µs | 97 µs | 7 µs | 7 µs |
+| Write `platform` | 0.35 ms | 0.61 ms | 0.05 ms | 0.03 ms |
+| Write `earthquakes` | 12 ms | 27 ms | 1.9 ms | 2.7 ms |
 
 `toml-rb` is pure Ruby, like this gem, and `json` and `oj` are C extensions. The script also compares `tomlib`, `perfect_toml`, and `tomlrb`, and times `SOML.format`, `SOML.edit`, and `SOML.parse_tree` on each fixture:
 
